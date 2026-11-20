@@ -1,0 +1,99 @@
+{
+  "platform": "Windows-11-10.0.22621-SP0",
+  "python_host": "3.13.3",
+  "python_other": "3.15",
+  "cython": "Cython version 3.3.1",
+  "startup_ms": {
+    "cpython_host": 28.084999998100102,
+    "cpython_other": 25.20160000131,
+    "cython": 29.153200011933222,
+    "cython_typed": 28.593899987754412,
+    "vela": 4.695499999797903
+  },
+  "rows": [
+    {
+      "name": "branch",
+      "cpython_host_ms": 915.1897999981884,
+      "cpython_other_ms": 682.5822999962838,
+      "cython_ms": 279.7536999860313,
+      "cython_typed_ms": 10.534500019275583,
+      "vela_ms": 26.309099994250573,
+      "speedup_vs_cpython_host": 34.78605502271793,
+      "speedup_vs_cpython_other": 25.944722554000368,
+      "speedup_vs_cython": 10.633343597734887,
+      "speedup_vs_cython_typed": 0.4004127857500913,
+      "typed_optimized_out": false,
+      "output": "0"
+    },
+    {
+      "name": "empty_call",
+      "cpython_host_ms": 751.8262000085087,
+      "cpython_other_ms": 531.2684000091394,
+      "cython_ms": 441.55719998525456,
+      "cython_typed_ms": 212.51270001812372,
+      "vela_ms": 25.07740000146441,
+      "speedup_vs_cpython_host": 29.980229208953293,
+      "speedup_vs_cpython_other": 21.185146784679258,
+      "speedup_vs_cython": 17.607774329056024,
+      "speedup_vs_cython_typed": 8.474271655184106,
+      "typed_optimized_out": false,
+      "output": "20000000"
+    },
+    {
+      "name": "fib30",
+      "cpython_host_ms": 442.09710000723135,
+      "cpython_other_ms": 300.63959999824874,
+      "cython_ms": 221.6527999844402,
+      "cython_typed_ms": 25.453000009292737,
+      "vela_ms": 34.93670000170823,
+      "speedup_vs_cpython_host": 12.654231795951391,
+      "speedup_vs_cpython_other": 8.605266095067622,
+      "speedup_vs_cython": 6.344411463406747,
+      "speedup_vs_cython_typed": 0.7285461994993291,
+      "typed_optimized_out": false,
+      "output": "4160200"
+    },
+    {
+      "name": "float_sum",
+      "cpython_host_ms": 635.9124000009615,
+      "cpython_other_ms": 452.0406999945408,
+      "cython_ms": 198.56329998583533,
+      "cython_typed_ms": 10.908200012636371,
+      "vela_ms": 31.209900000249036,
+      "speedup_vs_cpython_host": 20.375342439286488,
+      "speedup_vs_cpython_other": 14.483888124951818,
+      "speedup_vs_cython": 6.362189561140886,
+      "speedup_vs_cython_typed": 0.34951089277919284,
+      "typed_optimized_out": false,
+      "output": "30000000.0"
+    },
+    {
+      "name": "mulmod",
+      "cpython_host_ms": 305.0808000116376,
+      "cpython_other_ms": 204.34670000395272,
+      "cython_ms": 183.85009998746682,
+      "cython_typed_ms": 18.932400009362027,
+      "vela_ms": 30.371100001502782,
+      "speedup_vs_cpython_host": 10.045102087067706,
+      "speedup_vs_cpython_other": 6.7283272582765035,
+      "speedup_vs_cython": 6.053455422370932,
+      "speedup_vs_cython_typed": 0.6233689266580809,
+      "typed_optimized_out": false,
+      "output": "510195"
+    },
+    {
+      "name": "nested",
+      "cpython_host_ms": 627.1519000001717,
+      "cpython_other_ms": 405.1212000049418,
+      "cython_ms": 363.706899996032,
+      "cython_typed_ms": 0.7246000168379396,
+      "vela_ms": 14.812699999311008,
+      "speedup_vs_cpython_host": 42.33879711526885,
+      "speedup_vs_cpython_other": 27.349585154886377,
+      "speedup_vs_cython": 24.5537207945175,
+      "speedup_vs_cython_typed": 0.048917484109692586,
+      "typed_optimized_out": true,
+      "output": "20000000"
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "platform": "Windows-11-10.0.22621-SP0",
+  "python": "3.15.2",
+  "rows": [
+    {
+      "name": "collatz",
+      "cpython_ms": 1500.907300011022,
+      "vela_ms": 111.50220000126865,
+      "speedup": 13.460786423890696,
+      "compile_ms": 1.1611000081757084,
+      "image_bytes": 4608,
+      "output": "230631 442\r\n"
+    },
+    {
+      "name": "fib",
+      "cpython_ms": 181.7245999991428,
+      "vela_ms": 24.14580000913702,
+      "speedup": 7.526137047866558,
+      "compile_ms": 0.48740000056568533,
+      "image_bytes": 4096,
+      "output": "2178309\r\n"
+    },
+    {
+      "name": "loop",
+      "cpython_ms": 3501.9089999987045,
+      "vela_ms": 68.06800000777002,
+      "speedup": 51.44721454426395,
+      "compile_ms": 0.7630000036442652,
+      "image_bytes": 4096,
+      "output": "4999999950000000\r\n"
+    },
+    {
+      "name": "primes",
+      "cpython_ms": 237.5012999982573,
+      "vela_ms": 24.498699989635497,
+      "speedup": 9.69444501539818,
+      "compile_ms": 1.0558999929344282,
+      "image_bytes": 4608,
+      "output": "17984\r\n"
+    }
+  ]
+}

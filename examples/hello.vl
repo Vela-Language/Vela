@@ -1,0 +1,6 @@
+﻿print("Hello from Vela!")
+
+total = 0
+for i in range(10):
+    total += i
+print("sum 0..9 =", total)

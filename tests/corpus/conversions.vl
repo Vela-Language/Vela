@@ -1,0 +1,10 @@
+print(int(3.99), int(-3.99), float(7), int(True))
+print(float(2) + 0.5, float(True) + 1.5)
+
+
+def sign(n):
+    return 1 if n > 0 else -1 if n < 0 else 0
+
+
+print(sign(7), sign(-7), sign(0))
+print(10 if 1 < 2 else 20, 10 if 2 < 1 else 20)

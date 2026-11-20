@@ -1,0 +1,14 @@
+def count(a, b, s):
+    n = 0
+    for i in range(a, b, s):
+        n += 1
+    return n
+
+
+print(count(0, 10, 2), count(10, 0, -3), count(0, 0, 5), count(-5, 5, 4))
+print(count(0, 1, 10), count(5, 5, 1), count(-10, -20, -2))
+
+total = 0
+for i in range(100):
+    total += i * i
+print(total)

@@ -1,0 +1,7 @@
+s = "Vela 帆"
+print(s)
+print(len(s))
+print(len("你好，世界"))
+print("tab\there")
+print(len(""))
+print("ascii and 中文 mixed")

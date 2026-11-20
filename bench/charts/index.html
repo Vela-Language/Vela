@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>Vela 性能对比</title>
+<style>
+  :root { --ink:#1F2328; --muted:#6B7280; --line:#E5E7EB; --accent:#C0392B; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:40px; background:#F3F4F6; color:var(--ink);
+         font:15px/1.6 "Microsoft YaHei", system-ui, sans-serif; }
+  header { max-width:1400px; margin:0 auto 28px; }
+  h1 { font-size:30px; margin:0 0 8px; }
+  .sub { color:var(--muted); font-size:14px; }
+  .grid { max-width:1400px; margin:0 auto; display:grid;
+           grid-template-columns:repeat(auto-fit,minmax(620px,1fr)); gap:24px; }
+  .card { display:block; background:#fff; border:1px solid var(--line); border-radius:12px;
+           overflow:hidden; text-decoration:none; color:inherit;
+           box-shadow:0 1px 2px rgba(0,0,0,.04); }
+  .card:hover { border-color:var(--accent); }
+  .card img { width:100%; display:block; }
+  .meta { padding:12px 16px; border-top:1px solid var(--line); display:flex;
+           justify-content:space-between; gap:12px; font-size:13px; }
+  .meta span { color:var(--muted); }
+  footer { max-width:1400px; margin:32px auto 0; color:var(--muted); font-size:13px; }
+  code { background:#EEF0F3; padding:1px 5px; border-radius:4px; }
+</style></head>
+<body>
+  <header>
+    <h1>Vela 性能对比</h1>
+    <div class="sub">Vela v0.1.0 · Windows x86-64 · 2026-11-21<br>
+      同一份 Python 源码，Vela 编译为独立 PE32+；对照 CPython 3.15.2 /
+      3.13.3 与 Cython 3.3.1。
+      点击任意图片可查看原图；原始数据见
+      <a href="../peers/results-py3.15.json">peer JSON</a>、
+      <a href="../results-py315.json">heavy JSON</a>。</div>
+  </header>
+  <div class="grid">
+      <a class="card" href="01_empty_call.png">
+        <img src="01_empty_call.png" alt="空函数调用">
+        <div class="meta"><strong>空函数调用</strong><span>1,000,000 次调用 × 20 轮</span></div>
+      </a>
+      <a class="card" href="02_float_sum.png">
+        <img src="02_float_sum.png" alt="浮点累加">
+        <div class="meta"><strong>浮点累加</strong><span>1,000,000 次 double 加法 × 20 轮</span></div>
+      </a>
+      <a class="card" href="03_mulmod.png">
+        <img src="03_mulmod.png" alt="乘模">
+        <div class="meta"><strong>乘模</strong><span>1,000,000 次 (r*7+13)%1000003 × 5 轮</span></div>
+      </a>
+      <a class="card" href="04_branch.png">
+        <img src="04_branch.png" alt="分支">
+        <div class="meta"><strong>分支</strong><span>10,000,000 次奇偶分支 × 2 轮</span></div>
+      </a>
+      <a class="card" href="05_nested.png">
+        <img src="05_nested.png" alt="嵌套循环">
+        <div class="meta"><strong>嵌套循环</strong><span>1,000×1,000 计数 × 20 轮</span></div>
+      </a>
+      <a class="card" href="06_fib30.png">
+        <img src="06_fib30.png" alt="fib30 递归">
+        <div class="meta"><strong>fib30 递归</strong><span>fib(30) × 5 轮</span></div>
+      </a>
+      <a class="card" href="07_loop.png">
+        <img src="07_loop.png" alt="整数循环">
+        <div class="meta"><strong>整数循环</strong><span>100,000,000 次累加 × 1 轮</span></div>
+      </a>
+      <a class="card" href="08_fib.png">
+        <img src="08_fib.png" alt="fib32 递归">
+        <div class="meta"><strong>fib32 递归</strong><span>fib(32) × 1 轮</span></div>
+      </a>
+      <a class="card" href="09_collatz.png">
+        <img src="09_collatz.png" alt="Collatz">
+        <div class="meta"><strong>Collatz</strong><span>300,000 个起点 × 1 轮</span></div>
+      </a>
+      <a class="card" href="10_primes.png">
+        <img src="10_primes.png" alt="素数计数">
+        <div class="meta"><strong>素数计数</strong><span>200,000 个整数试除 × 1 轮</span></div>
+      </a>
+  </div>
+  <footer>
+    机器：Intel64 Family 6 Model 151 Stepping 5, GenuineIntel · Windows-11-10.0.22621-SP0；
+    Vela 编译耗时 0.4–1.6 ms/文件，产物 4.0–4.5 KB。
+    方法：进程墙钟取 5 次最小值并扣除空程序启动耗时；运行前逐字节比对输出。
+    Cython（typed）为手工 <code>cdef</code> 版本，仅作上限参考；被 gcc 常量折叠的项已标注。
+  </footer>
+</body></html>

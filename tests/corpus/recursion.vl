@@ -1,0 +1,27 @@
+def fib(n):
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+
+def ack(m, n):
+    if m == 0:
+        return n + 1
+    if n == 0:
+        return ack(m - 1, 1)
+    return ack(m - 1, ack(m, n - 1))
+
+
+print(fib(20))
+print(ack(2, 3))
+
+
+def gcd(a, b):
+    while b != 0:
+        t = a % b
+        a = b
+        b = t
+    return a
+
+
+print(gcd(1071, 462), gcd(17, 5), gcd(0, 9))

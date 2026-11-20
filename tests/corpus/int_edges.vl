@@ -1,0 +1,7 @@
+mx = 9223372036854775807
+mn = -9223372036854775808
+print(mx, mn)
+print(mx - 1, mn + 1)
+print(mx // 2, mn // 2)
+print(mx % 10, mn % 10)
+print(mx // 3, mn // 3, mx % 7, mn % 7)

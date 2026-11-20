@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Vela build artifacts
+*.exe
+*.obj
+*.ir
+*.bin
+*.pdb
+
+# Local workspace instructions (not part of the published project)
+AGENTS.md
+
+# Local test scratch
+temp/
+
+# Extension build artifacts
+*.pyd
+.venv/
