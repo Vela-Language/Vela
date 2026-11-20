@@ -1,6 +1,6 @@
 # Vela（帆）
 
-[![CI](https://github.com/Vela-Language/Vela/actions/workflows/ci.yml/badge.svg)](https://github.com/Vela-Language/Vela/actions/workflows/ci.yml)
+[![Release](https://github.com/Vela-Language/Vela/actions/workflows/release.yml/badge.svg)](https://github.com/Vela-Language/Vela/actions/workflows/release.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 > v0.1.0 实验性预览 · Windows x86-64 · Python 语法 · 不依赖 LLVM / 不依赖 CPython 运行时
@@ -100,6 +100,7 @@ python bench\chart.py                     # 生成 10 张对比图 + charts/inde
 - [docs/PERFORMANCE.md](docs/PERFORMANCE.md)：基准方法、CPython/Cython 对照、瓶颈分析
 - [docs/CPYTHON-SUITE.md](docs/CPYTHON-SUITE.md)：CPython 测试集覆盖调查与回归策略
 - [docs/ROADMAP.md](docs/ROADMAP.md)：从 v0.1 到"全语法 + 生态互通 + 接近 rustc"的路线
+- [docs/RELEASE.md](docs/RELEASE.md)：SemVer 规则、develop/master 分支模型、自动发布与安装包
 - [bench/charts/index.html](bench/charts/index.html)：10 张性能对比图
 
 ## 目录结构

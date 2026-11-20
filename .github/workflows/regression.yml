@@ -1,0 +1,40 @@
+name: Regression
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: full regression / Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.15"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Show interpreter
+        run: python -c "import sys, platform; print(sys.version); print(platform.machine())"
+
+      - name: Unit + differential regression (44 tests)
+        run: python -m unittest discover -s tests -v
+
+      - name: Differential corpus vs CPython
+        run: python tests/differential.py
+
+      - name: Build and run native executables
+        run: |
+          python -m vela check examples/fib.vl -v
+          python -m vela build examples/hello.vl -o hello.exe --stats
+          .\hello.exe
+
+      - name: Benchmark output verification (no timing gate)
+        run: python bench/run_bench.py --repeat 1
