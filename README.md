@@ -1,5 +1,8 @@
 # Vela（帆）
 
+[![CI](https://github.com/Vela-Language/Vela/actions/workflows/ci.yml/badge.svg)](https://github.com/Vela-Language/Vela/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 > v0.1.0 实验性预览 · Windows x86-64 · Python 语法 · 不依赖 LLVM / 不依赖 CPython 运行时
 
 Vela 是一个把 Python 源码直接编译成独立 `.exe` 的 AOT 编译器。前端复用宿主 CPython 的
@@ -46,8 +49,9 @@ fib.vl ──ast──> 类型推断 ──IR──> 寄存器分配 ──> x86
 
 玄铁 bench 同构语料（6 项，Vela 可编译部分）对照：**vs CPython 3.15 14.3x**、
 vs Cython(pure) 7.2x、vs Cython(typed) 0.7x（纯数值核落后 C 1.7–3.5x，调用密集快 8.6x）。
-共 10 张对比图与 HTML 画廊：[bench/charts/index.html](bench/charts/index.html)，
-方法见 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)。
+在线对比页：<https://vela.markjy.com/benchmark/>（10 张图 + 数据表）；
+仓库内页面：[bench/charts/index.html](bench/charts/index.html)。方法见
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md)。
 
 > 诚实说明：v0.1 的代码生成是"直白但正确"的（每次算术带溢出检查、无内联、无向量化），
 > 因此**尚未**达到 rustc -O 的代码质量。9–53x 是对 CPython 解释器的胜利，不是对 Rust 的胜利；
@@ -118,4 +122,7 @@ examples/        示例程序（.vl）
 
 ## 许可
 
-尚未选择许可证；在正式发布前请视为"保留所有权利"。
+[Apache License 2.0](LICENSE)。Copyright 2026 MARKJY-China。
+
+CI 在每次 push / PR 时用 CPython 3.13 与 3.15 跑全量回归（单测、差分语料、构建并运行
+原生 exe、基准输出校验），见 [.github/workflows/ci.yml](.github/workflows/ci.yml)。

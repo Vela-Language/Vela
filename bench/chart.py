@@ -230,7 +230,8 @@ def draw_chart(name: str, data: dict, out_path: str, meta: dict) -> None:
     print(f"  {out_path}")
 
 
-def build_index(charts: list[tuple[str, str, str]], out_dir: str, meta: dict) -> None:
+def build_index(charts: list[tuple[str, str, str]], out_dir: str, meta: dict,
+                link_prefix: str = "../") -> None:
     cards = []
     for fname, title, desc in charts:
         cards.append(f"""
@@ -269,8 +270,8 @@ def build_index(charts: list[tuple[str, str, str]], out_dir: str, meta: dict) ->
       同一份 Python 源码，Vela 编译为独立 PE32+；对照 CPython {html.escape(meta['py315'])} /
       {html.escape(meta['py313'])} 与 Cython {html.escape(meta['cython'])}。
       点击任意图片可查看原图；原始数据见
-      <a href="../peers/results-py3.15.json">peer JSON</a>、
-      <a href="../results-py315.json">heavy JSON</a>。</div>
+      <a href="{link_prefix}peers/results-py3.15.json">peer JSON</a>、
+      <a href="{link_prefix}results-py315.json">heavy JSON</a>。</div>
   </header>
   <div class="grid">{''.join(cards)}
   </div>
@@ -289,6 +290,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=DEFAULT_OUT)
     ap.add_argument("--only", default=None)
+    ap.add_argument("--link-prefix", default="../",
+                    help="prefix for JSON links in index.html; empty for a standalone deploy bundle")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -316,7 +319,7 @@ def main() -> int:
         draw_chart(name, cases[name], os.path.join(args.out, fname), meta)
         charts.append((fname, title, subtitle))
 
-    build_index(charts, args.out, meta)
+    build_index(charts, args.out, meta, args.link_prefix)
     print(f"index: {os.path.join(args.out, 'index.html')}")
     return 0
 

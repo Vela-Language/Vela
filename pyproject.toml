@@ -8,13 +8,14 @@ version = "0.1.0"
 description = "Vela: a Python-syntax AOT compiler for Windows x86-64 with a from-scratch backend"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Proprietary (pre-release)" }
+license = { text = "Apache-2.0" }
 authors = [{ name = "Vela contributors" }]
 keywords = ["compiler", "python", "windows", "x86-64", "aot"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: Microsoft :: Windows",
     "Topic :: Software Development :: Compilers",
+    "License :: OSI Approved :: Apache Software License",
 ]
 
 [project.scripts]
