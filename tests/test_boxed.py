@@ -1057,6 +1057,17 @@ class BoxedTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
         self.assertIn(b"4", p.stdout)
 
+    def test_boxed_dynamic_function_call(self):
+        mod = os.path.join(TMPDIR, "ops.vl")
+        with open(mod, "w", encoding="utf-8") as f:
+            f.write("def inc(x):\n    return x + 1\ndef dec(x):\n    return x - 1\n")
+        src = os.path.join(TMPDIR, "dyncall.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("import ops\ndef apply(f, x):\n    return f(x)\nprint(apply(ops.inc, 3), apply(ops.dec, 3))\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"4 2", p.stdout)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:

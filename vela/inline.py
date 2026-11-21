@@ -27,6 +27,8 @@ def _user_calls(fn: Function, known: set[str]) -> set[str]:
 
 
 def _eligible(fn: Function, known: set[str]) -> bool:
+    if fn.no_inline:
+        return False
     if len(fn.params) > MAX_PARAMS:
         return False
     if any(ins.op == "addr" for block in fn.blocks for ins in block.instrs):

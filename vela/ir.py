@@ -92,6 +92,7 @@ class Function:
         self.name = name
         self.ret_ty = ret_ty
         self.params: list[VReg] = []
+        self.no_inline = False
         self.blocks: list[Block] = []
         self._vreg_id = 0
         self._block_id = 0

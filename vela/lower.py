@@ -47,6 +47,10 @@ class Lowerer:
             native_ret in (INT, FLOAT, BOOL, STR, "bigint")
             or (self.dynamic_int and native_ret == INT))
         fn = Function(info.label, OBJ if boxed_ret else native_ret)
+        if any(isinstance(t, str) and (t == "func" or t.startswith("func:"))
+               for t in info.param_types) or (
+                isinstance(native_ret, str) and native_ret.startswith("func:")):
+            fn.no_inline = True
         b = FuncBuilder(self, fn, info.name, info.var_types, info.ret_type or NONE)
         b.globals = set(info.globals)
         b.param_names = set(info.params)
@@ -56,7 +60,7 @@ class Lowerer:
                 fn.params.append(v)
                 fn.entry.add("arg", v, i)
             elif self.boxed and (pty in ("list", "dict", "tuple", "set", "bigint")
-                                 or (isinstance(pty, str) and pty.startswith("func:"))):
+                                 or (isinstance(pty, str) and (pty == "func" or pty.startswith("func:")))):
                 v = fn.new_vreg(OBJ, pname + "_obj")
                 fn.params.append(v)
                 fn.entry.add("arg", v, i)
@@ -175,7 +179,7 @@ class FuncBuilder:
             self.cur.add("call", r, "rt_is_true", (v,))
             return r
         if (want in ("list", "dict", "tuple", "set", "bigint", "strlist", "module", "modules")
-                or (isinstance(want, str) and want.startswith("func:"))) and v.ty == OBJ:
+                or (isinstance(want, str) and (want == "func" or want.startswith("func:")))) and v.ty == OBJ:
             return v
         raise VelaTypeError(f"cannot convert {v.ty} to {want}")
 
@@ -467,7 +471,7 @@ class FuncBuilder:
                 f"local variable '{name}' is used before assignment", node)
         declared = self.var_types.get(name)
         if self.lw.boxed and (declared in ("list", "dict", "tuple", "set", "bigint", "strlist", "module", "modules")
-                              or (isinstance(declared, str) and declared.startswith("func:"))) and v.ty == OBJ:
+                              or (isinstance(declared, str) and (declared == "func" or declared.startswith("func:")))) and v.ty == OBJ:
             return v
         if self.lw.boxed and v.ty == OBJ and declared in (INT, FLOAT, BOOL, STR):
             r = self.fn.new_vreg(declared, name + "_v")
@@ -1735,6 +1739,22 @@ class FuncBuilder:
             return r
         target = name
         ft = self.var_types.get(name)
+        if ft == "func":
+            code = self.expr(node.func)
+            if len(node.args) > 3:
+                raise UnsupportedError("dynamic call with more than 3 arguments", node)
+            boxed_args = []
+            for a in node.args:
+                boxed_args.append(self.box_scalar(self.expr(a)))
+            zero = self.const_int(0)
+            while len(boxed_args) < 3:
+                boxed_args.append(zero)
+            res = self.fn.new_vreg(OBJ, "dyn_call")
+            self.cur.add("call", res, "rt_code_call",
+                         (code, boxed_args[0], boxed_args[1], boxed_args[2]))
+            native = self.fn.new_vreg(INT, "dyn_ret")
+            self.cur.add("call", native, "rt_unbox_int", (res,))
+            return native
         if isinstance(ft, str) and ft.startswith("func:"):
             target = ft[5:]
         info = self.lw.an.funcs.get(target)

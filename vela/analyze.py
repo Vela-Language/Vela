@@ -1129,9 +1129,15 @@ class Analyzer:
                         info.param_types[i] = "bigint"
                         self._infer_func(info, commit=True)
                         continue
-                    if info.param_ann[i] is None and isinstance(t, str) \
-                            and t.startswith("func:"):
+                    if info.param_ann[i] is None and want == INT \
+                            and isinstance(t, str) and t.startswith("func:"):
                         info.param_types[i] = t
+                        self._infer_func(info, commit=True)
+                        continue
+                    if info.param_ann[i] is None \
+                            and isinstance(want, str) and want.startswith("func:") \
+                            and isinstance(t, str) and t.startswith("func:"):
+                        info.param_types[i] = "func"
                         self._infer_func(info, commit=True)
                         continue
                     raise VelaTypeError(
