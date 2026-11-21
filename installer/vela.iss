@@ -50,7 +50,8 @@ CloseApplications=no
 SetupLogging=yes
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; Inno Setup 6.7.1 on GitHub's windows-latest image does not ship
+; Languages\ChineseSimplified.isl, so keep the installer English-only for now.
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
