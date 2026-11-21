@@ -1552,10 +1552,16 @@ class FuncBuilder:
 
     def call(self, node: ast.Call) -> VReg | None:
         if isinstance(node.func, ast.Name) and node.func.id == "__module_func":
-            zero = self.const_int(0)
-            dummy = self.fn.new_vreg(OBJ, "func_value")
-            self.cur.add("call", dummy, "rt_box_int", (zero,))
-            return dummy
+            qual = node.args[0].value
+            info = self.lw.an.funcs.get(qual)
+            if info is None:
+                raise UnsupportedError(f"unknown function value '{qual}'", node)
+            addr = self.fn.new_vreg(INT, "func_addr")
+            self.cur.add("addr", addr, info.label)
+            code = self.fn.new_vreg(OBJ, "func_value")
+            self.cur.add("call", code, "rt_code_new",
+                         (addr, self.const_int(len(info.params))))
+            return code
         if isinstance(node.func, ast.Name) and node.func.id == "__modules_registry":
             obj = self.call_rt("rt_dict_new", [self.const_int(0)], OBJ)
             for i in range(0, len(node.args), 2):

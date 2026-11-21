@@ -923,6 +923,63 @@ def build_gc_cycle_probe() -> bytes:
                      entry_off=asm.labels["_start"])
 
 
+def build_code_object_probe() -> bytes:
+    target = Function("fn_codetarget", OBJ)
+    target_arg = target.new_vreg(OBJ, "a")
+    target.params = [target_arg]
+    target.entry.add("arg", target_arg, 0)
+    target.entry.add("ret", None, target_arg)
+
+    fn = Function("fn_codeprobe", INT)
+    entry = fn.entry
+    addr = fn.new_vreg(INT, "addr")
+    code = fn.new_vreg(OBJ, "code")
+    arg = fn.new_vreg(OBJ, "arg")
+    forty_two = fn.new_vreg(INT, "forty_two")
+    one = fn.new_vreg(INT, "one")
+    zero = fn.new_vreg(INT, "zero")
+    res = fn.new_vreg(OBJ, "res")
+    value = fn.new_vreg(INT, "value")
+    cond = fn.new_vreg(BOOL, "cond")
+    ok = fn.new_block("ok")
+    bad = fn.new_block("bad")
+    entry.add("const", one, 1)
+    entry.add("const", zero, 0)
+    entry.add("const", forty_two, 42)
+    entry.add("addr", addr, target.name)
+    entry.add("call", code, "rt_code_new", (addr, one))
+    entry.add("call", arg, "rt_box_int", (forty_two,))
+    entry.add("call", res, "rt_code_call", (code, arg, zero, zero))
+    entry.add("call", value, "rt_unbox_int", (res,))
+    entry.add("cmp", cond, "eq", value, forty_two)
+    entry.add("br", None, cond, ok.label, bad.label)
+    ok.add("ret", None, zero)
+    bad.add("ret", None, one)
+
+    program = Program(functions=[target, fn], main=fn)
+    rdata = DataBuilder()
+    data = DataBuilder()
+    imports = make_imports()
+    runtime = Runtime(imports, rdata, data)
+    asm = Asm()
+    runtime.emit(asm)
+    allocs = {f.name: allocate(f) for f in program.functions}
+    emit_program(asm, program.functions, allocs, runtime, itertools.count())
+    asm.bind("_start")
+    asm.and_rsp(-16)
+    asm.sub_rsp(32)
+    asm.call(runtime.RT_INIT)
+    asm.call(fn.name)
+    asm.mov_ri("rcx", 0)
+    asm.call_iat(("idata", imports.slot("kernel32.dll", "ExitProcess")))
+    rdata_bytes = bytes(rdata.buf)
+    data_bytes = bytes(data.buf)
+    lay = layout_image(bytes(asm.b), rdata_bytes, data_bytes, imports)
+    asm.resolve(IMAGE_BASE, lay.rvas)
+    return build_exe(bytes(asm.b), rdata_bytes, data_bytes, imports,
+                     entry_off=asm.labels["_start"])
+
+
 class ObjectRuntimeTests(unittest.TestCase):
     def test_obj_type_regalloc(self):
         fn = Function("fn_objarg", OBJ)
@@ -1029,6 +1086,14 @@ class ObjectRuntimeTests(unittest.TestCase):
     def test_gc_cycle_collection(self):
         exe = build_gc_cycle_probe()
         path = os.path.join(TMPDIR, "gccycle.exe")
+        with open(path, "wb") as f:
+            f.write(exe)
+        proc = subprocess.run([path], capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+
+    def test_code_object_call(self):
+        exe = build_code_object_probe()
+        path = os.path.join(TMPDIR, "codeprobe.exe")
         with open(path, "wb") as f:
             f.write(exe)
         proc = subprocess.run([path], capture_output=True, timeout=30)
