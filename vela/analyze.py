@@ -1018,6 +1018,8 @@ class Analyzer:
         for a in node.args:
             if isinstance(a, ast.Lambda):
                 raise UnsupportedError("lambda expressions", a)
+        if name == "__module_func":
+            return "func:" + node.args[0].value
         if name == "__modules_registry":
             for a in node.args:
                 self._infer(a, env, None)
@@ -1103,8 +1105,12 @@ class Analyzer:
             return BOOL
         if name == "range":
             raise UnsupportedError("range() outside a for-loop", node)
-        if name in self.funcs:
-            info = self.funcs[name]
+        target = name
+        ft = env.get(name)
+        if isinstance(ft, str) and ft.startswith("func:"):
+            target = ft[5:]
+        if target in self.funcs:
+            info = self.funcs[target]
             if len(node.args) != len(info.params):
                 raise VelaCompileError(
                     f"{name}() takes {len(info.params)} arguments but "

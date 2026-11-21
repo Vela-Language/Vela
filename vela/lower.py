@@ -171,7 +171,8 @@ class FuncBuilder:
             r = self.fn.new_vreg(BOOL)
             self.cur.add("call", r, "rt_is_true", (v,))
             return r
-        if want in ("list", "dict", "tuple", "set", "bigint", "strlist", "module", "modules") and v.ty == OBJ:
+        if (want in ("list", "dict", "tuple", "set", "bigint", "strlist", "module", "modules")
+                or (isinstance(want, str) and want.startswith("func:"))) and v.ty == OBJ:
             return v
         raise VelaTypeError(f"cannot convert {v.ty} to {want}")
 
@@ -462,7 +463,8 @@ class FuncBuilder:
             raise VelaCompileError(
                 f"local variable '{name}' is used before assignment", node)
         declared = self.var_types.get(name)
-        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint", "strlist", "module", "modules") and v.ty == OBJ:
+        if self.lw.boxed and (declared in ("list", "dict", "tuple", "set", "bigint", "strlist", "module", "modules")
+                              or (isinstance(declared, str) and declared.startswith("func:"))) and v.ty == OBJ:
             return v
         if self.lw.boxed and v.ty == OBJ and declared in (INT, FLOAT, BOOL, STR):
             r = self.fn.new_vreg(declared, name + "_v")
@@ -501,7 +503,8 @@ class FuncBuilder:
             self.cur.add("mov", v, value)
             self.assigned.add(name)
             return
-        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint", "strlist", "module", "modules"):
+        if self.lw.boxed and (declared in ("list", "dict", "tuple", "set", "bigint", "strlist", "module", "modules")
+                              or declared.startswith("func:")):
             v = self.locals.get(name)
             if v is None or v.ty != OBJ:
                 v = self.fn.new_vreg(OBJ, name + "_list")
@@ -1546,6 +1549,11 @@ class FuncBuilder:
         return dst  # type: ignore[return-value]
 
     def call(self, node: ast.Call) -> VReg | None:
+        if isinstance(node.func, ast.Name) and node.func.id == "__module_func":
+            zero = self.const_int(0)
+            dummy = self.fn.new_vreg(OBJ, "func_value")
+            self.cur.add("call", dummy, "rt_box_int", (zero,))
+            return dummy
         if isinstance(node.func, ast.Name) and node.func.id == "__modules_registry":
             obj = self.call_rt("rt_dict_new", [self.const_int(0)], OBJ)
             for i in range(0, len(node.args), 2):
@@ -1714,7 +1722,11 @@ class FuncBuilder:
             r = self.fn.new_vreg(BOOL)
             self.cur.add("un", r, "bool", v)
             return r
-        info = self.lw.an.funcs.get(name)
+        target = name
+        ft = self.var_types.get(name)
+        if isinstance(ft, str) and ft.startswith("func:"):
+            target = ft[5:]
+        info = self.lw.an.funcs.get(target)
         if info is None:
             raise UnsupportedError(f"call to unknown function '{name}'", node)
         if self.lw.boxed:

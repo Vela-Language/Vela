@@ -153,6 +153,19 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
                     and v.value.value.id == "sys" and v.value.attr == "modules" \
                     and isinstance(v.slice, ast.Constant) \
                     and isinstance(v.slice.value, str) and v.slice.value in module_index \
+                    and node.attr in modules[v.slice.value][0]:
+                qual = v.slice.value.replace(".", "__") + "__" + node.attr
+                call = ast.Call(
+                    func=ast.Name(id="__module_func", ctx=ast.Load()),
+                    args=[ast.Constant(value=qual)], keywords=[])
+                call._vela_func = qual
+                return ast.copy_location(call, node)
+            if isinstance(node.ctx, ast.Load) and isinstance(v, ast.Subscript) \
+                    and isinstance(v.value, ast.Attribute) \
+                    and isinstance(v.value.value, ast.Name) \
+                    and v.value.value.id == "sys" and v.value.attr == "modules" \
+                    and isinstance(v.slice, ast.Constant) \
+                    and isinstance(v.slice.value, str) and v.slice.value in module_index \
                     and node.attr in module_index[v.slice.value]:
                 idx, ty = module_index[v.slice.value][node.attr]
                 call = ast.Call(
@@ -178,6 +191,13 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
             if isinstance(node.ctx, ast.Load) and isinstance(node.value, ast.Name) \
                     and node.value.id in modules:
                 funcs, consts = modules[node.value.id]
+                if node.attr in funcs:
+                    qual = node.value.id.replace(".", "__") + "__" + node.attr
+                    call = ast.Call(
+                        func=ast.Name(id="__module_func", ctx=ast.Load()),
+                        args=[ast.Constant(value=qual)], keywords=[])
+                    call._vela_func = qual
+                    return ast.copy_location(call, node)
                 if node.value.id in module_index and node.attr in module_index[node.value.id]:
                     idx, ty = module_index[node.value.id][node.attr]
                     call = ast.Call(
