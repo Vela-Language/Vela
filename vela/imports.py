@@ -186,6 +186,20 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
 
         def visit_Call(self, node: ast.Call) -> ast.AST:
             f = node.func
+            if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Subscript) \
+                    and isinstance(f.value.value, ast.Attribute) \
+                    and isinstance(f.value.value.value, ast.Name) \
+                    and f.value.value.value.id == "sys" \
+                    and f.value.value.attr == "modules" \
+                    and isinstance(f.value.slice, ast.Constant) \
+                    and isinstance(f.value.slice.value, str) \
+                    and f.value.slice.value in modules \
+                    and f.attr in modules[f.value.slice.value][0]:
+                mod = f.value.slice.value
+                node.func = ast.Name(id=f"{mod.replace('.', '__')}__{f.attr}",
+                                     ctx=ast.Load())
+                self.generic_visit(node)
+                return node
             if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) \
                     and f.value.id in modules:
                 funcs, consts = modules[f.value.id]
