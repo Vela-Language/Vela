@@ -109,6 +109,7 @@ class Runtime:
     SET_FILE = "rt_set_file"
     SET_CAUSE = "rt_set_cause"
     BIGINT_CMP = "rt_bigint_cmp"
+    BIGINT_LEN = "rt_bigint_len"
     BIGINT_DIV_SMALL = "rt_bigint_div_small"
     BIGINT_MOD_SMALL = "rt_bigint_mod_small"
     LIST_NEW = "rt_list_new"
@@ -3217,6 +3218,10 @@ class Runtime:
         a.bind("df_done")
         a.mov_rr("rsp", "rbp")
         a.pop_r("rbp")
+        a.ret()
+
+        a.bind(self.BIGINT_LEN)
+        a.mov_rm("rax", "rcx", 40)
         a.ret()
 
         a.bind(self.BIGINT_CMP)

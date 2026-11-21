@@ -1017,7 +1017,7 @@ class Analyzer:
             if len(node.args) != 1:
                 raise VelaCompileError("len() takes exactly one argument", node)
             t = self._infer(node.args[0], env, None)
-            if self.boxed and t in ("list", "tuple", "set", "dict"):
+            if self.boxed and t in ("list", "tuple", "set", "dict", "bigint"):
                 return INT
             if t is not None and t != STR:
                 raise VelaTypeError(f"len() requires str or list, got {t}", node)

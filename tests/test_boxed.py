@@ -814,6 +814,14 @@ class BoxedTests(unittest.TestCase):
         self.assertEqual(p.returncode, 1)
         self.assertIn(b"bigint too large", p.stderr + p.stdout)
 
+    def test_boxed_bigint_len(self):
+        src = os.path.join(TMPDIR, "boxed_biglen.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("print(len(99999999999999999999))\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"20", p.stdout)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:

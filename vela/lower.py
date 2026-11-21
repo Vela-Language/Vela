@@ -1307,6 +1307,8 @@ class FuncBuilder:
                 self.cur.add("call", r, "rt_dict_len", (v,))
             elif self.lw.boxed and t in ("list", "tuple", "set"):
                 self.cur.add("call", r, "rt_list_len", (v,))
+            elif self.lw.boxed and t == "bigint":
+                self.cur.add("call", r, "rt_bigint_len", (v,))
             else:
                 self.cur.add("un", r, "strlen", v)
             return r
