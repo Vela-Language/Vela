@@ -691,6 +691,64 @@ def build_bigint_probe() -> bytes:
                      entry_off=asm.labels["_start"])
 
 
+def build_num_add_probe() -> bytes:
+    fn = Function("fn_numadd", INT)
+    entry = fn.entry
+    zero = fn.new_vreg(INT, "zero")
+    for tag, a, b in (("small", 2, 3), ("big", 2 ** 62, 2 ** 62)):
+        av = fn.new_vreg(INT, tag + "a")
+        bv = fn.new_vreg(INT, tag + "b")
+        ao = fn.new_vreg(INT, tag + "ao")
+        bo = fn.new_vreg(INT, tag + "bo")
+        res = fn.new_vreg(INT, tag + "r")
+        entry.add("const", av, a)
+        entry.add("const", bv, b)
+        entry.add("call", ao, "rt_box_int", (av,))
+        entry.add("call", bo, "rt_box_int", (bv,))
+        entry.add("call", res, "rt_num_add", (ao, bo))
+        entry.add("call", None, "rt_print_obj", (res,))
+    for tag, op, a, b in (
+        ("sub1", "rt_num_sub", 5, 2),
+        ("mul1", "rt_num_mul", 3, 4),
+        ("mul2", "rt_num_mul", 2 ** 40, 2 ** 40),
+    ):
+        av = fn.new_vreg(INT, tag + "a")
+        bv = fn.new_vreg(INT, tag + "b")
+        ao = fn.new_vreg(INT, tag + "ao")
+        bo = fn.new_vreg(INT, tag + "bo")
+        res = fn.new_vreg(INT, tag + "r")
+        entry.add("const", av, a)
+        entry.add("const", bv, b)
+        entry.add("call", ao, "rt_box_int", (av,))
+        entry.add("call", bo, "rt_box_int", (bv,))
+        entry.add("call", res, op, (ao, bo))
+        entry.add("call", None, "rt_print_obj", (res,))
+    entry.add("const", zero, 0)
+    entry.add("ret", None, zero)
+    program = Program(functions=[fn], main=fn)
+    rdata = DataBuilder()
+    data = DataBuilder()
+    imports = make_imports()
+    runtime = Runtime(imports, rdata, data)
+    asm = Asm()
+    runtime.emit(asm)
+    allocs = {fn.name: allocate(fn)}
+    emit_program(asm, program.functions, allocs, runtime, itertools.count())
+    asm.bind("_start")
+    asm.and_rsp(-16)
+    asm.sub_rsp(32)
+    asm.call(runtime.RT_INIT)
+    asm.call(fn.name)
+    asm.mov_ri("rcx", 0)
+    asm.call_iat(("idata", imports.slot("kernel32.dll", "ExitProcess")))
+    rdata_bytes = bytes(rdata.buf)
+    data_bytes = bytes(data.buf)
+    lay = layout_image(bytes(asm.b), rdata_bytes, data_bytes, imports)
+    asm.resolve(IMAGE_BASE, lay.rvas)
+    return build_exe(bytes(asm.b), rdata_bytes, data_bytes, imports,
+                     entry_off=asm.labels["_start"])
+
+
 def build_list_probe() -> bytes:
     fn = Function("fn_list", INT)
     entry = fn.entry
@@ -810,6 +868,17 @@ class ObjectRuntimeTests(unittest.TestCase):
                     + str(123456789012345678901234567890 + 1).encode()
                     + str(123456789012345678901234567890 - 1).encode()
                     + str(12345678901234567890 * 9876543210).encode())
+        self.assertEqual(proc.stdout, expected)
+
+    def test_num_add_promotion(self):
+        exe = build_num_add_probe()
+        path = os.path.join(TMPDIR, "numadd.exe")
+        with open(path, "wb") as f:
+            f.write(exe)
+        proc = subprocess.run([path], capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+        expected = (b"5" + b"9223372036854775808"
+                    + b"3" + b"12" + str(2 ** 80).encode())
         self.assertEqual(proc.stdout, expected)
 
     def test_boxed_float(self):
