@@ -113,6 +113,7 @@ class FuncBuilder:
         self.globals: set[str] = set()
         self.finally_stack: list[list[ast.stmt]] = []
         self.param_names: set[str] = set()
+        self.big_consts: dict[str, int] = {}
         self.cur = fn.entry
         self.locals: dict[str, VReg] = {}
         self.assigned: set[str] = set()
@@ -398,6 +399,12 @@ class FuncBuilder:
                     self.cur.add("call", None, "rt_list_set", (obj, key, boxed))
                 return
             value = self.expr(node.value)
+            if isinstance(target, ast.Name):
+                cv = self.const_int_value(node.value)
+                if cv is not None and not -(2 ** 63) <= cv < 2 ** 63:
+                    self.big_consts[target.id] = cv
+                else:
+                    self.big_consts.pop(target.id, None)
             self.bind(target.id, value, node)
             return
         if isinstance(node, ast.AnnAssign):
@@ -951,12 +958,20 @@ class FuncBuilder:
             return self.call(node)
         raise UnsupportedError(ast.dump(node).split("(")[0], node)
 
+    def const_value(self, node: ast.expr) -> int | None:
+        v = self.const_int_value(node)
+        if v is not None:
+            return v
+        if isinstance(node, ast.Name):
+            return self.big_consts.get(node.id)
+        return None
+
     def binop(self, node: ast.BinOp) -> VReg:
         if self.lw.boxed and isinstance(node.op, (ast.FloorDiv, ast.Mod)) \
                 and getattr(node.left, "_vela_ty", None) == "bigint" \
                 and getattr(node.right, "_vela_ty", None) == "bigint":
-            a = self.const_int_value(node.left)
-            b = self.const_int_value(node.right)
+            a = self.const_value(node.left)
+            b = self.const_value(node.right)
             if a is not None and b is not None:
                 if b == 0:
                     raise VelaCompileError("division by zero", node)
