@@ -84,6 +84,14 @@ class DynamicIntTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
         self.assertIn(str(2 ** 62).encode(), p.stdout)
 
+    def test_bigint_division(self):
+        src = os.path.join(TMPDIR, "dyn_bigdiv.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("x = 4611686018427387904\ny = x * 4\nprint(y // y, y % y, y // x, y % x)\n")
+        p = vela("run", "--boxed-dyn", "--strict", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"1 0 4 0", p.stdout)
+
     def test_add_and_compare(self):
         src = os.path.join(TMPDIR, "dyn_add.vl")
         with open(src, "w", encoding="utf-8") as f:

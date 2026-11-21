@@ -1242,10 +1242,10 @@ class FuncBuilder:
             right = self.expr(node.right)
             a = self.as_num(left)
             b = self.as_num(right)
-            label = "rt_num_floordiv" if isinstance(node.op, ast.FloorDiv) else "rt_num_mod"
-            out = self.fn.new_vreg(OBJ, "num_div")
-            self.cur.add("call", out, label, (a, b))
-            return out
+            aa = self.call_rt("rt_num_to_bigint", [a], OBJ)
+            bb = self.call_rt("rt_num_to_bigint", [b], OBJ)
+            qv, rv = self.bigint_floor_divmod(aa, bb)
+            return qv if isinstance(node.op, ast.FloorDiv) else rv
         if self.dyn and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
             left = self.expr(node.left)
             right = self.expr(node.right)

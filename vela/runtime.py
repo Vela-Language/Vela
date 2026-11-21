@@ -117,6 +117,7 @@ class Runtime:
     NUM_NEG = "rt_num_neg"
     NUM_ABS = "rt_num_abs"
     NUM_TO_STR = "rt_num_to_str"
+    NUM_TO_BIGINT = "rt_num_to_bigint"
     NUM_FLOORDIV = "rt_num_floordiv"
     NUM_MOD = "rt_num_mod"
     BIGINT_CMP_MAG = "rt_bigint_cmp_mag"
@@ -3828,6 +3829,26 @@ class Runtime:
         a.bind("nts_fail")
         a.mov_abs64("rcx", ("rdata", self.msg_type))
         a.jmp(self.FAIL)
+
+        a.bind(self.NUM_TO_BIGINT)
+        a.push_r("rbp")
+        a.mov_rr("rbp", "rsp")
+        a.sub_rsp(64)
+        a.mov_mr("rbp", -8, "rcx")
+        a.mov_rm("r8", "rcx", 0)
+        a.mov_abs64("r10", ("data", self.type_int_off))
+        a.cmp_rr("r8", "r10")
+        a.jcc("ne", "ntb_ret")
+        a.mov_rm("rcx", "rcx", 32)
+        a.call(self.BIGINT_FROM_INT)
+        a.mov_rr("rsp", "rbp")
+        a.pop_r("rbp")
+        a.ret()
+        a.bind("ntb_ret")
+        a.mov_rm("rax", "rbp", -8)
+        a.mov_rr("rsp", "rbp")
+        a.pop_r("rbp")
+        a.ret()
 
         a.bind(self.GC_MARK)
         a.mov_mi("rcx", 16, 1)
