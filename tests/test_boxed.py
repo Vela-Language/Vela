@@ -1013,6 +1013,17 @@ class BoxedTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
         self.assertIn(b"5", p.stdout)
 
+    def test_boxed_sys_modules_dict_local(self):
+        mod = os.path.join(TMPDIR, "mathx2.vl")
+        with open(mod, "w", encoding="utf-8") as f:
+            f.write("def add(a, b):\n    return a + b\n")
+        src = os.path.join(TMPDIR, "sysreg.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("import mathx2\nimport sys\nreg = sys.modules\nprint(\"mathx2\" in reg, len(reg))\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"True 2", p.stdout)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:

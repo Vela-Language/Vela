@@ -171,7 +171,7 @@ class FuncBuilder:
             r = self.fn.new_vreg(BOOL)
             self.cur.add("call", r, "rt_is_true", (v,))
             return r
-        if want in ("list", "dict", "tuple", "set", "bigint", "strlist", "module") and v.ty == OBJ:
+        if want in ("list", "dict", "tuple", "set", "bigint", "strlist", "module", "modules") and v.ty == OBJ:
             return v
         raise VelaTypeError(f"cannot convert {v.ty} to {want}")
 
@@ -462,7 +462,7 @@ class FuncBuilder:
             raise VelaCompileError(
                 f"local variable '{name}' is used before assignment", node)
         declared = self.var_types.get(name)
-        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint", "strlist", "module") and v.ty == OBJ:
+        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint", "strlist", "module", "modules") and v.ty == OBJ:
             return v
         if self.lw.boxed and v.ty == OBJ and declared in (INT, FLOAT, BOOL, STR):
             r = self.fn.new_vreg(declared, name + "_v")
@@ -501,7 +501,7 @@ class FuncBuilder:
             self.cur.add("mov", v, value)
             self.assigned.add(name)
             return
-        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint", "strlist", "module"):
+        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint", "strlist", "module", "modules"):
             v = self.locals.get(name)
             if v is None or v.ty != OBJ:
                 v = self.fn.new_vreg(OBJ, name + "_list")
@@ -1423,7 +1423,7 @@ class FuncBuilder:
         if len(node.ops) == 1 and isinstance(node.ops[0], (ast.In, ast.NotIn)):
             right = self.expr(node.comparators[0])
             vo = self.box_scalar(self.expr(node.left))
-            label = "rt_dict_contains" if getattr(node.comparators[0], "_vela_ty", None) == "dict" else "rt_contains"
+            label = "rt_dict_contains" if getattr(node.comparators[0], "_vela_ty", None) in ("dict", "modules") else "rt_contains"
             res = self.call_rt(label, [right, vo], BOOL)
             if isinstance(node.ops[0], ast.In):
                 return res
@@ -1546,6 +1546,15 @@ class FuncBuilder:
         return dst  # type: ignore[return-value]
 
     def call(self, node: ast.Call) -> VReg | None:
+        if isinstance(node.func, ast.Name) and node.func.id == "__modules_registry":
+            obj = self.call_rt("rt_dict_new", [self.const_int(0)], OBJ)
+            for i in range(0, len(node.args), 2):
+                key = self.box_scalar(self.expr(node.args[i]))
+                val = self.expr(node.args[i + 1])
+                if val is None:
+                    val = self.const_int(0)
+                self.cur.add("call", None, "rt_dict_set", (obj, key, val))
+            return obj
         if isinstance(node.func, ast.Name) and node.func.id == "__module_new":
             n = self.const_int(len(node.args))
             obj = self.call_rt("rt_list_new", [n], OBJ)
@@ -1657,7 +1666,7 @@ class FuncBuilder:
             v = self.expr(node.args[0])
             r = self.fn.new_vreg(INT)
             t = getattr(node.args[0], "_vela_ty", None)
-            if self.lw.boxed and t == "dict":
+            if self.lw.boxed and t in ("dict", "modules"):
                 self.cur.add("call", r, "rt_dict_len", (v,))
             elif self.lw.boxed and t in ("list", "tuple", "set", "strlist"):
                 self.cur.add("call", r, "rt_list_len", (v,))

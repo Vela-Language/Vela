@@ -749,7 +749,7 @@ class Analyzer:
                     left, lt = comp, rt
                     continue
                 if self.boxed and isinstance(op, (ast.In, ast.NotIn)) \
-                        and rt in ("list", "tuple", "set", "dict") and lt in (INT, BOOL, STR):
+                        and rt in ("list", "tuple", "set", "dict", "modules") and lt in (INT, BOOL, STR):
                     continue
                 if lt is not None and rt is not None:
                     if self.boxed and lt == STR and rt == STR \
@@ -1018,6 +1018,10 @@ class Analyzer:
         for a in node.args:
             if isinstance(a, ast.Lambda):
                 raise UnsupportedError("lambda expressions", a)
+        if name == "__modules_registry":
+            for a in node.args:
+                self._infer(a, env, None)
+            return "modules"
         if name == "__module_new":
             for a in node.args:
                 self._infer(a, env, None)
@@ -1038,7 +1042,7 @@ class Analyzer:
             if len(node.args) != 1:
                 raise VelaCompileError("len() takes exactly one argument", node)
             t = self._infer(node.args[0], env, None)
-            if self.boxed and t in ("list", "tuple", "set", "dict", "bigint", "strlist"):
+            if self.boxed and t in ("list", "tuple", "set", "dict", "bigint", "strlist", "modules"):
                 return INT
             if t is not None and t != STR:
                 raise VelaTypeError(f"len() requires str or list, got {t}", node)

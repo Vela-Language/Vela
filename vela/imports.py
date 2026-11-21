@@ -165,9 +165,16 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
             if isinstance(node.ctx, ast.Load) and isinstance(node.value, ast.Name) \
                     and node.value.id == "sys" and node.attr == "modules" and has_sys:
                 names = sorted(module_names | {"sys"})
-                return ast.copy_location(ast.Dict(
-                    keys=[ast.Constant(value=n) for n in names],
-                    values=[ast.Constant(value=1) for _ in names]), node)
+                args: list[ast.expr] = []
+                for n in names:
+                    args.append(ast.Constant(value=n))
+                    if n in module_index:
+                        args.append(ast.Name(id=n, ctx=ast.Load()))
+                    else:
+                        args.append(ast.Constant(value=None))
+                return ast.copy_location(ast.Call(
+                    func=ast.Name(id="__modules_registry", ctx=ast.Load()),
+                    args=args, keywords=[]), node)
             if isinstance(node.ctx, ast.Load) and isinstance(node.value, ast.Name) \
                     and node.value.id in modules:
                 funcs, consts = modules[node.value.id]
