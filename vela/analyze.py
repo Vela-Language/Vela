@@ -1115,6 +1115,9 @@ class Analyzer:
                 t = self._infer(arg, env, want)
                 if want is None and t is not None:
                     info.param_types[i] = t
+                    if isinstance(t, str) and t.startswith("func:"):
+                        self._infer_func(info, commit=True)
+                        continue
                 elif want is not None and not assignable(t, want):
                     if self.boxed and info.param_ann[i] is None \
                             and want == INT and t == STR:
@@ -1126,8 +1129,17 @@ class Analyzer:
                         info.param_types[i] = "bigint"
                         self._infer_func(info, commit=True)
                         continue
+                    if info.param_ann[i] is None and isinstance(t, str) \
+                            and t.startswith("func:"):
+                        info.param_types[i] = t
+                        self._infer_func(info, commit=True)
+                        continue
                     raise VelaTypeError(
                         f"argument {i + 1} of {name}() is {type_name(t)} but the "
                         f"parameter is {want}", arg)
             return info.ret_type
+        if name in env:
+            # A parameter may receive a function value from a later call site.
+            # Defer; the parameter type is widened and the body re-inferred.
+            return INT
         raise UnsupportedError(f"call to unknown function '{name}'", node)

@@ -1035,6 +1035,28 @@ class BoxedTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
         self.assertIn(b"5 9", p.stdout)
 
+    def test_boxed_function_value_argument(self):
+        mod = os.path.join(TMPDIR, "mathx5.vl")
+        with open(mod, "w", encoding="utf-8") as f:
+            f.write("def inc(x):\n    return x + 1\n")
+        src = os.path.join(TMPDIR, "funcarg.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("import mathx5\ndef apply(f, x):\n    return f(x)\nprint(apply(mathx5.inc, 3))\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"4", p.stdout)
+
+    def test_boxed_function_value_return(self):
+        mod = os.path.join(TMPDIR, "mathx6.vl")
+        with open(mod, "w", encoding="utf-8") as f:
+            f.write("def inc(x):\n    return x + 1\n")
+        src = os.path.join(TMPDIR, "funcret.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("import mathx6\ndef get():\n    return mathx6.inc\ng = get()\nprint(g(3))\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"4", p.stdout)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:

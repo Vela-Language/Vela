@@ -41,6 +41,8 @@ class Lowerer:
 
     def lower_function(self, info: FuncInfo) -> Function:
         native_ret = info.ret_type or NONE
+        if isinstance(native_ret, str) and native_ret.startswith("func:"):
+            native_ret = OBJ
         boxed_ret = self.boxed and (
             native_ret in (INT, FLOAT, BOOL, STR, "bigint")
             or (self.dynamic_int and native_ret == INT))
@@ -53,7 +55,8 @@ class Lowerer:
                 v = fn.new_vreg(OBJ, pname + "_obj")
                 fn.params.append(v)
                 fn.entry.add("arg", v, i)
-            elif self.boxed and pty in ("list", "dict", "tuple", "set", "bigint"):
+            elif self.boxed and (pty in ("list", "dict", "tuple", "set", "bigint")
+                                 or (isinstance(pty, str) and pty.startswith("func:"))):
                 v = fn.new_vreg(OBJ, pname + "_obj")
                 fn.params.append(v)
                 fn.entry.add("arg", v, i)
@@ -1762,7 +1765,8 @@ class FuncBuilder:
             self.cur.add("call", native, unbox, (obj,))
             self.cur.add("call", None, "rt_decref", (obj,))
             return native
-        dst_ty = OBJ if ((self.dyn and ret == INT) or ret == "bigint") else ret
+        dst_ty = OBJ if ((self.dyn and ret == INT) or ret == "bigint"
+                         or (isinstance(ret, str) and ret.startswith("func:"))) else ret
         dst = self.fn.new_vreg(dst_ty) if ret != NONE else None
         self.cur.add("call", dst, info.label, tuple(args))
         return dst
