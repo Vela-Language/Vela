@@ -65,13 +65,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "${{ steps.meta.outputs.tag }}" 2>$null | Out-Null
-          if ($LASTEXITCODE -eq 0) {
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $exists = $false
+          gh release view $tag 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) { $exists = $true }
+          if ($exists) {
             "skip=true" >> $env:GITHUB_OUTPUT
-            Write-Host "release ${{ steps.meta.outputs.tag }} already exists; skipping"
+            Write-Host "release $tag already exists; skipping"
           } else {
             "skip=false" >> $env:GITHUB_OUTPUT
           }
+          exit 0
 
       - name: Build tar.gz and setup.exe
         if: steps.check.outputs.skip != 'true'
