@@ -275,10 +275,12 @@ def hoist_nested_functions(tree: ast.Module) -> None:
 
 
 class Analyzer:
-    def __init__(self, tree: ast.Module, filename: str = "<input>", boxed: bool = False) -> None:
+    def __init__(self, tree: ast.Module, filename: str = "<input>", boxed: bool = False,
+                 dynamic_int: bool = False) -> None:
         self.tree = tree
         self.filename = filename
         self.boxed = boxed
+        self.dynamic_int = dynamic_int
         self.funcs: dict[str, FuncInfo] = {}
         self.main_vars: dict[str, str | None] = {}
         self.has_main_code = False

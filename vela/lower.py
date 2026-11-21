@@ -19,11 +19,13 @@ PY_NONE = None
 
 class Lowerer:
     def __init__(self, analyzer: Analyzer, rdata: DataBuilder,
-                 filename: str = "<input>", boxed: bool = False) -> None:
+                 filename: str = "<input>", boxed: bool = False,
+                 dynamic_int: bool = False) -> None:
         self.an = analyzer
         self.rdata = rdata
         self.filename = filename
         self.boxed = boxed
+        self.dynamic_int = dynamic_int
         self.mutable_globals = set(getattr(analyzer, "mutable_globals", set()))
         self.global_slots = {name: i for i, name in enumerate(sorted(self.mutable_globals))}
         self.strings: dict[str, int] = {}
