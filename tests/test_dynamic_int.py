@@ -48,6 +48,14 @@ class DynamicIntTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
         self.assertIn(b"3", p.stdout)
 
+    def test_while_loop(self):
+        src = os.path.join(TMPDIR, "dyn_while.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("i = 0\ns = 0\nwhile i < 3:\n    s = s + i\n    i = i + 1\nprint(s)\n")
+        p = vela("run", "--boxed-dyn", "--strict", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"3", p.stdout)
+
     def test_add_and_compare(self):
         src = os.path.join(TMPDIR, "dyn_add.vl")
         with open(src, "w", encoding="utf-8") as f:
