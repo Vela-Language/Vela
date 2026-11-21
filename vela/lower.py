@@ -116,6 +116,7 @@ class FuncBuilder:
         self.finally_stack: list[list[ast.stmt]] = []
         self.param_names: set[str] = set()
         self.big_consts: dict[str, int] = {}
+        self.dyn = self.lw.dynamic_int
         self.cur = fn.entry
         self.locals: dict[str, VReg] = {}
         self.assigned: set[str] = set()
@@ -161,6 +162,12 @@ class FuncBuilder:
         if v.ty == INT and want == BOOL:
             r = self.fn.new_vreg(BOOL)
             self.cur.add("un", r, "bool", v)
+            return r
+        if self.dyn and want == INT and v.ty == OBJ:
+            return v
+        if self.dyn and want == BOOL and v.ty == OBJ:
+            r = self.fn.new_vreg(BOOL)
+            self.cur.add("call", r, "rt_is_true", (v,))
             return r
         if want in ("list", "dict", "tuple", "set", "bigint") and v.ty == OBJ:
             return v
@@ -269,6 +276,15 @@ class FuncBuilder:
             return out
         raise VelaTypeError(f"cannot use {v.ty} in bigint arithmetic")
 
+    def as_num(self, v: VReg) -> VReg:
+        if v.ty == OBJ:
+            return v
+        if v.ty == INT:
+            o = self.fn.new_vreg(OBJ, "num")
+            self.cur.add("call", o, "rt_box_int", (v,))
+            return o
+        raise VelaTypeError(f"cannot use {v.ty} as integer")
+
     def box_scalar(self, v: VReg) -> VReg:
         o = self.fn.new_vreg(OBJ, "boxed")
         label = {INT: "rt_box_int", FLOAT: "rt_box_float",
@@ -290,6 +306,9 @@ class FuncBuilder:
             self.cur.add("call", r, unbox, (obj,))
             return r
         v = self.locals.get(name)
+        if self.dyn and self.var_types.get(name) == INT and v is not None \
+                and v.ty == OBJ and name in self.assigned:
+            return v
         if v is None or name not in self.assigned:
             raise VelaCompileError(
                 f"local variable '{name}' is used before assignment", node)
@@ -323,6 +342,16 @@ class FuncBuilder:
         declared = self.var_types.get(name)
         if declared is None:
             declared = value.ty if value is not None else NONE
+        if self.dyn and declared == INT:
+            v = self.locals.get(name)
+            if v is None or v.ty != OBJ:
+                v = self.fn.new_vreg(OBJ, name + "_num")
+                self.locals[name] = v
+            if value is None:
+                raise VelaTypeError(f"cannot assign None to '{name}'", node)
+            self.cur.add("mov", v, value)
+            self.assigned.add(name)
+            return
         if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint"):
             v = self.locals.get(name)
             if v is None or v.ty != OBJ:
@@ -854,6 +883,8 @@ class FuncBuilder:
             if isinstance(v, bool):
                 return self.const_bool(v)
             if isinstance(v, int):
+                if self.dyn:
+                    return self.as_num(self.const_int(v))
                 if self.lw.boxed and not -(2 ** 63) <= v < 2 ** 63:
                     d = self.fn.new_vreg(STR, "big_desc")
                     self.cur.add("str", d, self.lw.string_offset(str(v)))
@@ -999,6 +1030,16 @@ class FuncBuilder:
         return None
 
     def binop(self, node: ast.BinOp) -> VReg:
+        if self.dyn and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
+            left = self.expr(node.left)
+            right = self.expr(node.right)
+            a = self.as_num(left)
+            b = self.as_num(right)
+            label = {ast.Add: "rt_num_add", ast.Sub: "rt_num_sub",
+                     ast.Mult: "rt_num_mul"}[type(node.op)]
+            out = self.fn.new_vreg(OBJ, "num_res")
+            self.cur.add("call", out, label, (a, b))
+            return out
         if self.lw.boxed and isinstance(node.op, (ast.FloorDiv, ast.Mod)) \
                 and getattr(node.left, "_vela_ty", None) == "bigint" \
                 and getattr(node.right, "_vela_ty", None) == "bigint":
@@ -1211,6 +1252,19 @@ class FuncBuilder:
                   node: ast.AST) -> VReg:
         if left is None or right is None:
             raise UnsupportedError("comparison with None", node)
+        if self.dyn and (left.ty in (INT, OBJ) and right.ty in (INT, OBJ)):
+            a = self.as_num(left)
+            b = self.as_num(right)
+            cv = self.fn.new_vreg(INT, "num_cmp")
+            self.cur.add("call", cv, "rt_num_cmp", (a, b))
+            z = self.const_int(0)
+            name = {ast.Eq: "eq", ast.NotEq: "ne", ast.Lt: "lt",
+                    ast.LtE: "le", ast.Gt: "gt", ast.GtE: "ge"}.get(type(op))
+            if name is None:
+                raise UnsupportedError("dynamic int comparison", node)
+            r = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", r, name, cv, z)
+            return r
         if self.lw.boxed and (left.ty == OBJ or right.ty == OBJ):
             a = self.as_bigint(left)
             b = self.as_bigint(right)
@@ -1509,6 +1563,11 @@ class FuncBuilder:
                 self.cur.add("call", None, "rt_print_obj", (o,))
                 self.cur.add("call", None, "rt_decref", (o,))
                 continue
+            if self.dyn and getattr(arg, "_vela_ty", None) == INT:
+                v = self.expr(arg)
+                if v.ty == OBJ:
+                    self.cur.add("call", None, "rt_print_obj", (v,))
+                    continue
             if self.lw.boxed and getattr(arg, "_vela_ty", None) == "bigint":
                 v = self.expr(arg)
                 self.cur.add("call", None, "rt_print_obj", (v,))
