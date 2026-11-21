@@ -8,33 +8,12 @@ import sys
 import tempfile
 import time
 
-from . import __version__
+from . import __version__, i18n
 from .driver import analyze_source, compile_file, compile_source
 from .errors import UnsupportedError, VelaError
 from .ir_dump import dump_program
 
-USAGE = """Vela {version} - Python-syntax native compiler for Windows x86-64
 
-usage:
-  vela build <file.vl> [-o out.exe] [--stats] [--emit-ir]
-  vela run   <file.vl> [--strict] [--stats] [-v] [-- <program args>...]
-  vela check <file.vl> [-v]
-
-  .vl and .py are both accepted; .vl is the recommended Vela source suffix
-  (the contents are ordinary Python syntax).
-  vela version
-  vela --help
-
-commands:
-  build   compile to a standalone .exe (native profile, no fallback)
-  run     compile and execute; if the file is outside the native profile it
-          falls back to CPython (unless --strict)
-  check   parse + type-check only, report whether the file is in the profile
-
-notes:
-  The native profile is a statically typed subset of Python (int64, float64,
-  bool, str, None).  See docs/ARCHITECTURE.md and docs/PROFILE.md.
-"""
 
 
 def _err(msg: str) -> None:
@@ -69,7 +48,7 @@ def _parse(argv: list[str]):
         if a in ("-o", "--output"):
             i += 1
             if i >= len(argv):
-                raise SystemExit("vela: -o requires a path")
+                raise SystemExit(i18n.t("output.requires"))
             opts["output"] = argv[i]
         elif a == "--strict":
             opts["strict"] = True
@@ -80,7 +59,7 @@ def _parse(argv: list[str]):
         elif a in ("-v", "--verbose"):
             opts["verbose"] = True
         elif a.startswith("-"):
-            raise SystemExit(f"vela: unknown option {a}")
+            raise SystemExit(i18n.t("unknown.option", opt=a))
         else:
             positional.append(a)
         i += 1
@@ -90,7 +69,7 @@ def _parse(argv: list[str]):
 def cmd_build(argv: list[str]) -> int:
     pos, opts = _parse(argv)
     if len(pos) != 1:
-        _err("vela build: expected exactly one source file")
+        _err(i18n.t("build.one_file"))
         return 2
     src = pos[0]
     try:
@@ -107,15 +86,15 @@ def cmd_build(argv: list[str]) -> int:
         ir_path = os.path.splitext(out)[0] + ".ir"
         with open(ir_path, "w", encoding="utf-8") as f:
             f.write(dump_program(result.program))
-        _err(f"vela: IR written to {ir_path}")
-    print(f"vela: built {out} ({len(result.exe)} bytes)")
+        _err(i18n.t("build.ir", path=ir_path))
+    print(i18n.t("build.built", path=out, size=len(result.exe)))
     return 0
 
 
 def cmd_check(argv: list[str]) -> int:
     pos, opts = _parse(argv)
     if len(pos) != 1:
-        _err("vela check: expected exactly one source file")
+        _err(i18n.t("check.one_file"))
         return 2
     src = pos[0]
     with open(src, "r", encoding="utf-8-sig") as f:
@@ -125,7 +104,7 @@ def cmd_check(argv: list[str]) -> int:
     except (VelaError, SyntaxError) as exc:
         _err(_format_error(exc, src))
         return 1
-    print(f"OK: {src} is within the Vela native profile")
+    print(i18n.t("check.ok", path=src))
     if opts["verbose"]:
         for name, info in analyzer.funcs.items():
             params = ", ".join(
@@ -133,7 +112,7 @@ def cmd_check(argv: list[str]) -> int:
             print(f"  def {name}({params}) -> {info.ret_type}")
         main_names = sorted(analyzer.main_vars)
         if main_names:
-            print("  module globals: " + ", ".join(
+            print(i18n.t("check.globals") + ", ".join(
                 f"{n}: {analyzer.main_vars[n]}" for n in main_names))
     return 0
 
@@ -141,7 +120,7 @@ def cmd_check(argv: list[str]) -> int:
 def cmd_run(argv: list[str]) -> int:
     pos, opts = _parse(argv)
     if len(pos) != 1:
-        _err("vela run: expected exactly one source file")
+        _err(i18n.t("run.one_file"))
         return 2
     src = pos[0]
     program_args = opts["args"]
@@ -155,7 +134,7 @@ def cmd_run(argv: list[str]) -> int:
             _err(_format_error(exc, src))
             return 1
         _err(f"vela: {_format_error(exc, src)}")
-        _err("vela: falling back to CPython (source is outside the native profile)")
+        _err(i18n.t("run.fallback"))
         return subprocess.call([sys.executable, src] + program_args)
     if opts["stats"]:
         _print_stats(result)
@@ -165,7 +144,7 @@ def cmd_run(argv: list[str]) -> int:
         with open(exe, "wb") as f:
             f.write(result.exe)
         if opts["verbose"]:
-            _err(f"vela: running native code ({len(result.exe)} bytes)")
+            _err(i18n.t("run.native", size=len(result.exe)))
         return subprocess.call([exe] + program_args)
     finally:
         try:
@@ -178,7 +157,7 @@ def cmd_bench(argv: list[str]) -> int:
     """Compile *and* run each given source once, printing timings."""
     pos, opts = _parse(argv)
     if not pos:
-        _err("vela bench: expected at least one source file")
+        _err(i18n.t("bench.one_file"))
         return 2
     for src in pos:
         t0 = time.perf_counter()
@@ -206,10 +185,48 @@ def cmd_bench(argv: list[str]) -> int:
     return 0
 
 
+def _extract_lang(argv: list[str]) -> list[str]:
+    out: list[str] = []
+    lang: str | None = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            out.extend(argv[i:])
+            break
+        if a == "--lang":
+            if i + 1 >= len(argv):
+                _err(i18n.t("lang.missing"))
+                raise SystemExit(2)
+            lang = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith("--lang="):
+            lang = a.split("=", 1)[1]
+            i += 1
+            continue
+        out.append(a)
+        i += 1
+    if lang is not None:
+        try:
+            i18n.set_lang(lang)
+        except ValueError:
+            _err(i18n.t("lang.invalid", lang=lang))
+            raise SystemExit(2)
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
+    # Bilingual output: keep UTF-8 even when stdout is a pipe or a legacy
+    # console code page would otherwise mangle Chinese.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # pragma: no cover - non-standard streams
+            pass
+    argv = _extract_lang(list(sys.argv[1:] if argv is None else argv))
     if not argv or argv[0] in ("-h", "--help", "help"):
-        print(USAGE.format(version=__version__))
+        print(i18n.usage(__version__))
         return 0
     cmd = argv[0]
     rest = argv[1:]
@@ -224,6 +241,6 @@ def main(argv: list[str] | None = None) -> int:
     if cmd in ("version", "--version", "-V"):
         print(f"Vela {__version__} (Windows x86-64 native)")
         return 0
-    _err(f"vela: unknown command '{cmd}'")
-    print(USAGE.format(version=__version__), file=sys.stderr)
+    _err(i18n.t("unknown.command", cmd=cmd))
+    print(i18n.usage(__version__), file=sys.stderr)
     return 2

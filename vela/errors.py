@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import ast
 
+from . import i18n
+
 
 class VelaError(Exception):
     """Base class for all user-facing compiler errors."""
@@ -25,11 +27,16 @@ class VelaError(Exception):
         col = getattr(self.node, "col_offset", None)
         return col + 1 if col is not None else None
 
+    def localized_message(self) -> str:
+        return self.message
+
     def format(self, filename: str | None = None) -> str:
         fn = self.filename or filename or "<input>"
+        kind = i18n.kind_label(self.kind)
+        message = self.localized_message()
         if self.lineno is None:
-            return f"{fn}: {self.kind}: {self.message}"
-        return f"{fn}:{self.lineno}:{self.col}: {self.kind}: {self.message}"
+            return f"{fn}: {kind}: {message}"
+        return f"{fn}:{self.lineno}:{self.col}: {kind}: {message}"
 
 
 class UnsupportedError(VelaError):
@@ -40,6 +47,11 @@ class UnsupportedError(VelaError):
         msg = f"unsupported by the Vela native profile (v0.1): {feature}"
         super().__init__(msg, node, filename)
         self.feature = feature
+
+    def localized_message(self) -> str:
+        if i18n.get_lang() == "zh":
+            return i18n.t("err.unsupported", feature=i18n.feature_text(self.feature))
+        return self.message
 
 
 class VelaTypeError(VelaError):

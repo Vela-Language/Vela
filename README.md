@@ -79,6 +79,17 @@ python -m vela check examples/fib.vl -v
 .\vela.cmd build bench/fib.vl -o fib.exe
 ```
 
+## 中英双语（i18n）
+
+```powershell
+python -m vela --help --lang zh
+python -m vela check examples/fib.vl --lang zh
+$env:VELA_LANG = "zh"; python -m vela run examples/fib.vl
+```
+
+当前覆盖：帮助/用法、CLI 状态消息、诊断类别、"native profile 不支持"包装与常见特性名。
+类型/编译错误的细节文本、生成 exe 的运行时错误仍为英文，后续迁移到消息 ID。
+
 ## 测试与基准
 
 ```powershell
@@ -101,6 +112,7 @@ python bench\chart.py                     # 生成 10 张对比图 + charts/inde
 - [docs/CPYTHON-SUITE.md](docs/CPYTHON-SUITE.md)：CPython 测试集覆盖调查与回归策略
 - [docs/ROADMAP.md](docs/ROADMAP.md)：从 v0.1 到"全语法 + 生态互通 + 接近 rustc"的路线
 - [docs/RELEASE.md](docs/RELEASE.md)：SemVer 规则、develop/master 分支模型、自动发布与安装包
+- [docs/V1.0-PLAN.md](docs/V1.0-PLAN.md)：到 v1.0（Python 3.15.2 等价）的里程碑任务清单与验收门槛
 - [bench/charts/index.html](bench/charts/index.html)：10 张性能对比图
 
 ## 目录结构
