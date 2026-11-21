@@ -956,6 +956,14 @@ class BoxedTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
         self.assertIn(b"12499", p.stdout)
 
+    def test_boxed_bigint_negative_div_explicit(self):
+        src = os.path.join(TMPDIR, "boxed_bigneg_div.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("def f(a, b):\n    return (0 - a) // b\nprint(f(99999999999999999999, 77777777777777777777))\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn(b"bigint division requires", p.stderr + p.stdout)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:
