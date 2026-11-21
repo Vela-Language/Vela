@@ -66,6 +66,16 @@ class DynamicIntTests(unittest.TestCase):
         self.assertIn("3 1", out)
         self.assertIn(str((2 ** 62) // 3), out)
 
+    def test_containers(self):
+        src = os.path.join(TMPDIR, "dyn_cont.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("x = [1, 2, 3]\ns = 0\nfor v in x:\n    s = s + v\nprint(s)\nd = {1: 10, 2: 20}\nprint(d[1] + d[2])\n")
+        p = vela("run", "--boxed-dyn", "--strict", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        out = p.stdout.decode("utf-8", "replace")
+        self.assertIn("6", out)
+        self.assertIn("30", out)
+
     def test_add_and_compare(self):
         src = os.path.join(TMPDIR, "dyn_add.vl")
         with open(src, "w", encoding="utf-8") as f:

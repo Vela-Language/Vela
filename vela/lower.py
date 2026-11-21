@@ -295,6 +295,8 @@ class FuncBuilder:
         raise VelaTypeError(f"cannot use {v.ty} as integer")
 
     def box_scalar(self, v: VReg) -> VReg:
+        if self.dyn and v.ty == OBJ:
+            return v
         o = self.fn.new_vreg(OBJ, "boxed")
         label = {INT: "rt_box_int", FLOAT: "rt_box_float",
                  BOOL: "rt_box_bool", STR: "rt_box_str"}[v.ty]
