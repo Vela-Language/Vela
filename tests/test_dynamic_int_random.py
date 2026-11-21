@@ -42,5 +42,33 @@ class DynamicIntRandomTests(unittest.TestCase):
             self.assertEqual(g.strip(), e, f"case {i}")
 
 
+    def test_random_huge_mixed(self):
+        rng = random.Random(20261124)
+        lines = []
+        expected = []
+        for _ in range(10):
+            da = rng.randint(20, 35)
+            db = rng.randint(10, 20)
+            a = rng.randrange(10 ** (da - 1), 10 ** da)
+            b = rng.randrange(10 ** (db - 1), 10 ** db)
+            if rng.random() < 0.5:
+                b = -b
+            ae = str(a)
+            be = str(b) if b >= 0 else f"(0 - {abs(b)})"
+            lines.append(
+                f"print({ae} + {be}, {ae} - {be}, {ae} * {be}, {ae} // {be}, {ae} % {be}, {ae} < {be})")
+            expected.append(
+                f"{a + b} {a - b} {a * b} {a // b} {a % b} {a < b}")
+        src = os.path.join(TMPDIR, "dyn_huge.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        p = vela("run", "--boxed-dyn", "--strict", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        got = p.stdout.decode("utf-8", "replace").strip().splitlines()
+        self.assertEqual(len(got), len(expected), got)
+        for i, (g, e) in enumerate(zip(got, expected)):
+            self.assertEqual(g.strip(), e, f"case {i}")
+
+
 if __name__ == "__main__":
     unittest.main()
