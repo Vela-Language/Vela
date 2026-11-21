@@ -41,7 +41,9 @@ class Lowerer:
 
     def lower_function(self, info: FuncInfo) -> Function:
         native_ret = info.ret_type or NONE
-        boxed_ret = self.boxed and native_ret in (INT, FLOAT, BOOL, STR)
+        boxed_ret = self.boxed and (
+            native_ret in (INT, FLOAT, BOOL, STR)
+            or (self.dynamic_int and native_ret == INT))
         fn = Function(info.label, OBJ if boxed_ret else native_ret)
         b = FuncBuilder(self, fn, info.name, info.var_types, info.ret_type or NONE)
         b.globals = set(info.globals)
@@ -522,7 +524,8 @@ class FuncBuilder:
                 self.cur.add("ret", None, None)
             else:
                 v = self.coerce(self.expr(node.value), self.ret_ty)
-                if self.lw.boxed and v.ty in (INT, FLOAT, BOOL, STR):
+                if self.lw.boxed and v.ty in (INT, FLOAT, BOOL, STR) \
+                        and not (self.dyn and self.ret_ty == INT):
                     o = self.fn.new_vreg(OBJ, "boxed_ret")
                     label = {INT: "rt_box_int", FLOAT: "rt_box_float",
                              BOOL: "rt_box_bool", STR: "rt_box_str"}[v.ty]
@@ -987,6 +990,18 @@ class FuncBuilder:
         if isinstance(node, ast.BinOp):
             return self.binop(node)
         if isinstance(node, ast.UnaryOp):
+            if self.dyn and isinstance(node.op, (ast.USub, ast.UAdd)) \
+                    and getattr(node.operand, "_vela_ty", None) == INT:
+                v = self.expr(node.operand)
+                if isinstance(node.op, ast.UAdd):
+                    return v
+                if v.ty == OBJ:
+                    out = self.fn.new_vreg(OBJ, "num_neg")
+                    self.cur.add("call", out, "rt_num_neg", (v,))
+                    return out
+                r = self.fn.new_vreg(INT)
+                self.cur.add("un", r, "neg", v)
+                return r
             if isinstance(node.op, ast.Not):
                 v = self.expr(node.operand)
                 r = self.fn.new_vreg(BOOL)
@@ -1478,7 +1493,8 @@ class FuncBuilder:
                 v = boxed
             args.append(v)
         ret = info.ret_type or NONE
-        if self.lw.boxed and ret in (INT, FLOAT, BOOL, STR):
+        if self.lw.boxed and ret in (INT, FLOAT, BOOL, STR) \
+                and not (self.dyn and ret == INT):
             obj = self.fn.new_vreg(OBJ, "boxed_call")
             self.cur.add("call", obj, info.label, tuple(args))
             native = self.fn.new_vreg(ret, "unboxed")
@@ -1487,7 +1503,8 @@ class FuncBuilder:
             self.cur.add("call", native, unbox, (obj,))
             self.cur.add("call", None, "rt_decref", (obj,))
             return native
-        dst = self.fn.new_vreg(ret) if ret != NONE else None
+        dst_ty = OBJ if (self.dyn and ret == INT) else ret
+        dst = self.fn.new_vreg(dst_ty) if ret != NONE else None
         self.cur.add("call", dst, info.label, tuple(args))
         return dst
 

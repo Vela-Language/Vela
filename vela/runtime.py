@@ -113,6 +113,7 @@ class Runtime:
     NUM_SUB = "rt_num_sub"
     NUM_MUL = "rt_num_mul"
     NUM_CMP = "rt_num_cmp"
+    NUM_NEG = "rt_num_neg"
     BIGINT_CMP_MAG = "rt_bigint_cmp_mag"
     BIGINT_NEG = "rt_bigint_neg"
     BIGINT_LEN = "rt_bigint_len"
@@ -3567,6 +3568,39 @@ class Runtime:
         a.mov_rm("rcx", "rbp", -24)
         a.mov_rm("rdx", "rbp", -32)
         a.call(self.BIGINT_CMP)
+        a.mov_rr("rsp", "rbp")
+        a.pop_r("rbp")
+        a.ret()
+
+        a.bind(self.NUM_NEG)
+        a.push_r("rbp")
+        a.mov_rr("rbp", "rsp")
+        a.sub_rsp(64)
+        a.mov_mr("rbp", -8, "rcx")
+        a.mov_rm("r8", "rcx", 0)
+        a.mov_abs64("r10", ("data", self.type_int_off))
+        a.cmp_rr("r8", "r10")
+        a.jcc("ne", "nn_big")
+        a.mov_rm("rax", "rcx", 32)
+        a.neg_r("rax")
+        a.jcc("o", "nn_promote")
+        a.mov_rr("rcx", "rax")
+        a.call(self.BOX_INT)
+        a.mov_rr("rsp", "rbp")
+        a.pop_r("rbp")
+        a.ret()
+        a.bind("nn_promote")
+        a.mov_rm("rcx", "rbp", -8)
+        a.mov_rm("rcx", "rcx", 32)
+        a.call(self.BIGINT_FROM_INT)
+        a.mov_rr("rcx", "rax")
+        a.call(self.BIGINT_NEG)
+        a.mov_rr("rsp", "rbp")
+        a.pop_r("rbp")
+        a.ret()
+        a.bind("nn_big")
+        a.mov_rm("rcx", "rbp", -8)
+        a.call(self.BIGINT_NEG)
         a.mov_rr("rsp", "rbp")
         a.pop_r("rbp")
         a.ret()

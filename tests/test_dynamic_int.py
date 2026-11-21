@@ -24,6 +24,22 @@ class DynamicIntTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
         self.assertIn(str(2 ** 62 * 4).encode(), p.stdout)
 
+    def test_function_return_promotes(self):
+        src = os.path.join(TMPDIR, "dyn_fn.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("def f(x):\n    return x * x\nprint(f(4611686018427387904))\n")
+        p = vela("run", "--boxed-dyn", "--strict", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(str(2 ** 62 * 2 ** 62).encode(), p.stdout)
+
+    def test_negative_promotes(self):
+        src = os.path.join(TMPDIR, "dyn_neg.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("x = -4611686018427387904\nprint(x * 3)\n")
+        p = vela("run", "--boxed-dyn", "--strict", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(str(-(2 ** 62) * 3).encode(), p.stdout)
+
     def test_add_and_compare(self):
         src = os.path.join(TMPDIR, "dyn_add.vl")
         with open(src, "w", encoding="utf-8") as f:
