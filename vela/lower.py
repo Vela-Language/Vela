@@ -684,6 +684,13 @@ class FuncBuilder:
         if node.exc is not None:
             desc = self.expr(node.exc.args[0])
             code_val = {"ValueError": 1, "TypeError": 2}.get(node.exc.func.id, 1)
+        cause = self.const_int(0)
+        if node.cause is not None:
+            c = node.cause
+            if not (isinstance(c, ast.Call) and len(c.args) == 1):
+                raise UnsupportedError("raise ... from with a non-call cause", node)
+            cause = self.coerce(self.expr(c.args[0]), STR)
+        self.cur.add("call", None, "rt_set_cause", (cause,))
         code = self.const_int(code_val)
         line = self.const_int(node.lineno)
         self.cur.add("call", None, "rt_set_line", (line,))

@@ -786,6 +786,16 @@ class BoxedTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
         self.assertIn(b"True True True", p.stdout)
 
+    def test_boxed_exception_cause(self):
+        src = os.path.join(TMPDIR, "boxed_cause.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("raise ValueError(\"top\") from ValueError(\"inner\")\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 1)
+        combined = p.stdout + p.stderr
+        self.assertIn(b"top", combined)
+        self.assertIn(b"caused by inner", combined)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:

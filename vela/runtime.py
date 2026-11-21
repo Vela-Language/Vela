@@ -107,6 +107,7 @@ class Runtime:
     LEAVE = "rt_leave"
     DUMP_FRAMES = "rt_dump_frames"
     SET_FILE = "rt_set_file"
+    SET_CAUSE = "rt_set_cause"
     BIGINT_CMP = "rt_bigint_cmp"
     BIGINT_DIV_SMALL = "rt_bigint_div_small"
     BIGINT_MOD_SMALL = "rt_bigint_mod_small"
@@ -196,6 +197,7 @@ class Runtime:
         self.in_func_off = rdata.add_str_descriptor(" in ")
         self.file_prefix_off = rdata.add_str_descriptor("File \"")
         self.file_mid_off = rdata.add_str_descriptor("\", line ")
+        self.cause_prefix_off = rdata.add_str_descriptor("caused by ")
         self.squote_off = rdata.add_str_descriptor("\'")
         self.rparen_off = rdata.add_str_descriptor(")")
         self.rbrace_off = rdata.add_str_descriptor("}")
@@ -228,6 +230,7 @@ class Runtime:
         self.frames_off = data.add(b"\x00" * (64 * 16), 8)
         self.frame_depth_off = data.add(b"\x00" * 8, 8)
         self.exc_file_off = data.add(b"\x00" * 8, 8)
+        self.exc_cause_off = data.add(b"\x00" * 8, 8)
         self.gc_roots_off = data.add(b"\x00" * (1024 * 8), 8)
         self.gc_root_count_off = data.add(b"\x00" * 8, 8)
         self.msg_root_overflow = rdata.add_str_descriptor(
@@ -1591,6 +1594,18 @@ class Runtime:
         a.mov_abs64("rcx", ("rdata", self.nl_off))
         a.call(self.PRINT_STR)
         a.call(self.DUMP_FRAMES)
+        a.mov_abs64("r11", ("data", self.exc_cause_off))
+        a.mov_rm("rcx", "r11")
+        a.test_rr("rcx", "rcx")
+        a.jcc("e", "ru_no_cause")
+        a.mov_rr("rbx", "rcx")
+        a.mov_abs64("rcx", ("rdata", self.cause_prefix_off))
+        a.call(self.PRINT_STR)
+        a.mov_rr("rcx", "rbx")
+        a.call(self.PRINT_STR)
+        a.mov_abs64("rcx", ("rdata", self.nl_off))
+        a.call(self.PRINT_STR)
+        a.bind("ru_no_cause")
         a.bind("ru_no_msg")
         a.pop_r("rbx")
         a.mov_abs64("rcx", ("rdata", self.msg_unhandled))
@@ -3143,6 +3158,11 @@ class Runtime:
         a.add_rr("r11", "rax")
         a.mov_mr("r11", 8, "rcx")
         a.bind("sl_ret")
+        a.ret()
+
+        a.bind(self.SET_CAUSE)
+        a.mov_abs64("r11", ("data", self.exc_cause_off))
+        a.mov_mr("r11", 0, "rcx")
         a.ret()
 
         a.bind(self.SET_FILE)
