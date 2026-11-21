@@ -220,6 +220,13 @@ class FuncBuilder:
         self.cur.add("jmp", None, cond.block.label)
         self.use(exit_b)
 
+    def const_bigint(self, value: int) -> VReg:
+        d = self.fn.new_vreg(STR, "big_desc")
+        self.cur.add("str", d, self.lw.string_offset(str(value)))
+        o = self.fn.new_vreg(OBJ, "big_obj")
+        self.cur.add("call", o, "rt_bigint_from_decimal", (d,))
+        return o
+
     def as_bigint(self, v: VReg) -> VReg:
         if v.ty == OBJ:
             return v
@@ -945,6 +952,18 @@ class FuncBuilder:
         raise UnsupportedError(ast.dump(node).split("(")[0], node)
 
     def binop(self, node: ast.BinOp) -> VReg:
+        if self.lw.boxed and isinstance(node.op, (ast.FloorDiv, ast.Mod)) \
+                and getattr(node.left, "_vela_ty", None) == "bigint" \
+                and getattr(node.right, "_vela_ty", None) == "bigint":
+            a = self.const_int_value(node.left)
+            b = self.const_int_value(node.right)
+            if a is not None and b is not None:
+                if b == 0:
+                    raise VelaCompileError("division by zero", node)
+                value = a // b if isinstance(node.op, ast.FloorDiv) else a % b
+                return self.const_bigint(value)
+            raise UnsupportedError(
+                "bigint division requires compile-time constant operands", node)
         left = self.expr(node.left)
         right = self.expr(node.right)
         if self.lw.boxed and "bigint" in (
