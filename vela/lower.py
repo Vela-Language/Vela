@@ -62,7 +62,7 @@ class Lowerer:
         if self.boxed:
             fname = fn.new_vreg(STR, "func_name")
             fn.entry.add("str", fname, self.string_offset(info.name))
-            fn.entry.add("call", None, "rt_set_func", (fname,))
+            fn.entry.add("call", None, "rt_enter", (fname,))
         if self.boxed:
             zero = fn.new_vreg(INT, "zero_slot")
             fn.entry.add("const", zero, 0)
@@ -83,7 +83,10 @@ class Lowerer:
         if self.boxed:
             mname = fn.new_vreg(STR, "func_name")
             fn.entry.add("str", mname, self.string_offset("__main__"))
-            fn.entry.add("call", None, "rt_set_func", (mname,))
+            fn.entry.add("call", None, "rt_enter", (mname,))
+            fdesc = fn.new_vreg(STR, "file_name")
+            fn.entry.add("str", fdesc, self.string_offset(self.filename))
+            fn.entry.add("call", None, "rt_set_file", (fdesc,))
         for stmt in self.an.tree.body:
             if isinstance(stmt, ast.FunctionDef):
                 continue
@@ -342,6 +345,8 @@ class FuncBuilder:
                 continue
             if block is self.cur:
                 self.boxed_cleanup()
+                if self.lw.boxed:
+                    block.add("call", None, "rt_leave", ())
                 if self.ret_ty != NONE:
                     # The analyzer already proved every reachable path returns;
                     # this continuation is unreachable, but the IR still needs a
@@ -437,6 +442,8 @@ class FuncBuilder:
                         f"{self.name}() must return a value of type {self.ret_ty}")
                 self.emit_finally()
                 self.boxed_cleanup()
+                if self.lw.boxed:
+                    self.cur.add("call", None, "rt_leave", ())
                 self.cur.add("ret", None, None)
             else:
                 v = self.coerce(self.expr(node.value), self.ret_ty)
@@ -447,10 +454,14 @@ class FuncBuilder:
                     self.emit_finally()
                     self.cur.add("call", o, label, (v,))
                     self.boxed_cleanup()
+                    if self.lw.boxed:
+                        self.cur.add("call", None, "rt_leave", ())
                     self.cur.add("ret", None, o)
                 else:
                     self.emit_finally()
                     self.boxed_cleanup()
+                    if self.lw.boxed:
+                        self.cur.add("call", None, "rt_leave", ())
                     self.cur.add("ret", None, v)
             return
         if isinstance(node, ast.Pass):
@@ -1127,6 +1138,19 @@ class FuncBuilder:
                   node: ast.AST) -> VReg:
         if left is None or right is None:
             raise UnsupportedError("comparison with None", node)
+        if self.lw.boxed and (left.ty == OBJ or right.ty == OBJ):
+            a = self.as_bigint(left)
+            b = self.as_bigint(right)
+            cv = self.fn.new_vreg(INT, "big_cmp")
+            self.cur.add("call", cv, "rt_bigint_cmp", (a, b))
+            z = self.const_int(0)
+            name = {ast.Eq: "eq", ast.NotEq: "ne", ast.Lt: "lt",
+                    ast.LtE: "le", ast.Gt: "gt", ast.GtE: "ge"}.get(type(op))
+            if name is None:
+                raise UnsupportedError("bigint comparison", node)
+            r = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", r, name, cv, z)
+            return r
         if left.ty == STR and right.ty == STR and isinstance(op, (ast.Eq, ast.NotEq)):
             res = self.call_rt("rt_str_eq", [left, right], BOOL)
             if isinstance(op, ast.Eq):
@@ -1308,6 +1332,9 @@ class FuncBuilder:
         info = self.lw.an.funcs.get(name)
         if info is None:
             raise UnsupportedError(f"call to unknown function '{name}'", node)
+        if self.lw.boxed:
+            line = self.const_int(node.lineno)
+            self.cur.add("call", None, "rt_set_line", (line,))
         args: list[VReg | None] = []
         for i, a in enumerate(node.args):
             v = self.expr(a)

@@ -768,6 +768,24 @@ class BoxedTests(unittest.TestCase):
         self.assertIn("7", out)
         self.assertIn("ok", out)
 
+    def test_boxed_traceback_frames(self):
+        src = os.path.join(TMPDIR, "boxed_trace.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("def c():\n    raise ValueError(\"deep\")\ndef b():\n    c()\ndef a():\n    b()\na()\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 1)
+        combined = p.stdout + p.stderr
+        for token in (b"in c", b"in b", b"in a", b"line 2", b"line 7"):
+            self.assertIn(token, combined)
+
+    def test_boxed_bigint_compare(self):
+        src = os.path.join(TMPDIR, "boxed_bigcmp.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("print(99999999999999999999 > 1, 99999999999999999999 == 99999999999999999999, 1 < 99999999999999999999)\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"True True True", p.stdout)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:

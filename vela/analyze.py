@@ -741,6 +741,11 @@ class Analyzer:
                 if rt is None and lt is not None:
                     rt = lt
                     self._retro(comp, lt, env)
+                if self.boxed and (lt == "bigint" or rt == "bigint") \
+                        and isinstance(op, (ast.Eq, ast.NotEq, ast.Lt, ast.LtE,
+                                            ast.Gt, ast.GtE)):
+                    left, lt = comp, rt
+                    continue
                 if self.boxed and isinstance(op, (ast.In, ast.NotIn)) \
                         and rt in ("list", "tuple", "set", "dict") and lt in (INT, BOOL, STR):
                     continue
