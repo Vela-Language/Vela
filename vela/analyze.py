@@ -1058,6 +1058,15 @@ class Analyzer:
             if not (is_numeric(ta) and is_numeric(tb)):
                 raise VelaTypeError(f"{name}() requires numbers, got {ta} and {tb}", node)
             return join(norm_numeric(ta), norm_numeric(tb))
+        if name == "str":
+            if len(node.args) != 1:
+                raise VelaCompileError("str() takes exactly one argument", node)
+            t = self._infer(node.args[0], env, None)
+            if t == STR:
+                return STR
+            if self.boxed and t in (INT, "bigint", BOOL):
+                return STR
+            raise VelaTypeError(f"str() does not support {t}", node)
         if name in ("int", "float", "bool"):
             if len(node.args) != 1:
                 raise VelaCompileError(f"{name}() takes exactly one argument", node)

@@ -1508,6 +1508,13 @@ class FuncBuilder:
             if a.ty == OBJ or b.ty == OBJ:
                 return self.num_minmax(name == "min", a, b)
             return self.emit_minmax(name == "min", a, b, node)
+        if name == "str":
+            v = self.expr(node.args[0])
+            if v.ty == STR:
+                return v
+            if v.ty == OBJ:
+                return self.call_rt("rt_num_to_str", [v], STR)
+            raise UnsupportedError("str() on native int in this profile", node)
         if name == "int":
             v = self.expr(node.args[0])
             if v.ty == FLOAT:
