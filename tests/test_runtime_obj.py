@@ -695,7 +695,9 @@ def build_num_add_probe() -> bytes:
     fn = Function("fn_numadd", INT)
     entry = fn.entry
     zero = fn.new_vreg(INT, "zero")
-    for tag, a, b in (("small", 2, 3), ("big", 2 ** 62, 2 ** 62)):
+    for tag, a, b in (("small", 2, 3), ("big", 2 ** 62, 2 ** 62),
+                      ("neg", -(2 ** 62), 2 ** 62 + 1),
+                      ("neg2", -(2 ** 62), -(2 ** 62 + 1))):
         av = fn.new_vreg(INT, tag + "a")
         bv = fn.new_vreg(INT, tag + "b")
         ao = fn.new_vreg(INT, tag + "ao")
@@ -709,6 +711,8 @@ def build_num_add_probe() -> bytes:
         entry.add("call", None, "rt_print_obj", (res,))
     for tag, op, a, b in (
         ("sub1", "rt_num_sub", 5, 2),
+        ("sub3", "rt_num_sub", 2 ** 62 + 1, -(2 ** 62)),
+        ("sub4", "rt_num_sub", -(2 ** 62), 2 ** 62 + 1),
         ("mul1", "rt_num_mul", 3, 4),
         ("mul2", "rt_num_mul", 2 ** 40, 2 ** 40),
     ):
@@ -878,7 +882,9 @@ class ObjectRuntimeTests(unittest.TestCase):
         proc = subprocess.run([path], capture_output=True, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
         expected = (b"5" + b"9223372036854775808"
-                    + b"3" + b"12" + str(2 ** 80).encode())
+                    + b"1" + b"-9223372036854775809"
+                    + b"3" + b"9223372036854775809" + b"-9223372036854775809"
+                    + b"12" + str(2 ** 80).encode())
         self.assertEqual(proc.stdout, expected)
 
     def test_boxed_float(self):
