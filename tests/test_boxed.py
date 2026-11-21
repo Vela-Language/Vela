@@ -796,6 +796,24 @@ class BoxedTests(unittest.TestCase):
         self.assertIn(b"top", combined)
         self.assertIn(b"caused by inner", combined)
 
+    def test_boxed_bigint_div_large(self):
+        src = os.path.join(TMPDIR, "boxed_bigdiv_large.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("print(99999999999999999999 // 777777777777777777, 99999999999999999999 % 777777777777777777)\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        out = p.stdout.decode("utf-8", "replace")
+        self.assertIn(str(99999999999999999999 // 777777777777777777), out)
+        self.assertIn(str(99999999999999999999 % 777777777777777777), out)
+
+    def test_boxed_bigint_div_too_large(self):
+        src = os.path.join(TMPDIR, "boxed_bigdiv_too_large.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("print(99999999999999999999 // 7777777777777777777)\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn(b"bigint too large", p.stderr + p.stdout)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:
