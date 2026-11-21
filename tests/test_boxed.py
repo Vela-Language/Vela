@@ -832,6 +832,17 @@ class BoxedTests(unittest.TestCase):
         self.assertIn("1", out)
         self.assertIn("22222222222222222222", out)
 
+    def test_boxed_bigint_variables(self):
+        src = os.path.join(TMPDIR, "boxed_bigvars.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("a = 99999999999999999999\nb = 88888888888888888888\nprint(a + b)\nprint(a - b)\nprint(a * 3)\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        out = p.stdout.decode("utf-8", "replace")
+        self.assertIn(str(99999999999999999999 + 88888888888888888888), out)
+        self.assertIn(str(99999999999999999999 - 88888888888888888888), out)
+        self.assertIn(str(99999999999999999999 * 3), out)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:

@@ -159,7 +159,7 @@ class FuncBuilder:
             r = self.fn.new_vreg(BOOL)
             self.cur.add("un", r, "bool", v)
             return r
-        if want in ("list", "dict", "tuple", "set") and v.ty == OBJ:
+        if want in ("list", "dict", "tuple", "set", "bigint") and v.ty == OBJ:
             return v
         raise VelaTypeError(f"cannot convert {v.ty} to {want}")
 
@@ -261,7 +261,7 @@ class FuncBuilder:
             raise VelaCompileError(
                 f"local variable '{name}' is used before assignment", node)
         declared = self.var_types.get(name)
-        if self.lw.boxed and declared in ("list", "dict", "tuple", "set") and v.ty == OBJ:
+        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint") and v.ty == OBJ:
             return v
         if self.lw.boxed and v.ty == OBJ and declared in (INT, FLOAT, BOOL, STR):
             r = self.fn.new_vreg(declared, name + "_v")
@@ -290,7 +290,7 @@ class FuncBuilder:
         declared = self.var_types.get(name)
         if declared is None:
             declared = value.ty if value is not None else NONE
-        if self.lw.boxed and declared in ("list", "dict", "tuple", "set"):
+        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint"):
             v = self.locals.get(name)
             if v is None or v.ty != OBJ:
                 v = self.fn.new_vreg(OBJ, name + "_list")
