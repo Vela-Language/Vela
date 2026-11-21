@@ -171,7 +171,7 @@ class FuncBuilder:
             r = self.fn.new_vreg(BOOL)
             self.cur.add("call", r, "rt_is_true", (v,))
             return r
-        if want in ("list", "dict", "tuple", "set", "bigint", "strlist") and v.ty == OBJ:
+        if want in ("list", "dict", "tuple", "set", "bigint", "strlist", "module") and v.ty == OBJ:
             return v
         raise VelaTypeError(f"cannot convert {v.ty} to {want}")
 
@@ -462,7 +462,7 @@ class FuncBuilder:
             raise VelaCompileError(
                 f"local variable '{name}' is used before assignment", node)
         declared = self.var_types.get(name)
-        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint", "strlist") and v.ty == OBJ:
+        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint", "strlist", "module") and v.ty == OBJ:
             return v
         if self.lw.boxed and v.ty == OBJ and declared in (INT, FLOAT, BOOL, STR):
             r = self.fn.new_vreg(declared, name + "_v")
@@ -501,7 +501,7 @@ class FuncBuilder:
             self.cur.add("mov", v, value)
             self.assigned.add(name)
             return
-        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint", "strlist"):
+        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint", "strlist", "module"):
             v = self.locals.get(name)
             if v is None or v.ty != OBJ:
                 v = self.fn.new_vreg(OBJ, name + "_list")
@@ -1546,6 +1546,30 @@ class FuncBuilder:
         return dst  # type: ignore[return-value]
 
     def call(self, node: ast.Call) -> VReg | None:
+        if isinstance(node.func, ast.Name) and node.func.id == "__module_new":
+            n = self.const_int(len(node.args))
+            obj = self.call_rt("rt_list_new", [n], OBJ)
+            for i, a in enumerate(node.args):
+                native = self.expr(a)
+                boxed = self.box_scalar(native)
+                idx = self.const_int(i)
+                self.cur.add("call", None, "rt_list_set", (obj, idx, boxed))
+            return obj
+        if isinstance(node.func, ast.Name) and node.func.id == "__module_get":
+            obj = self.expr(node.args[0])
+            idx = self.expr(node.args[1])
+            elem = self.call_rt("rt_list_get", [obj, idx], OBJ)
+            ty = getattr(node, "_vela_mod_ty", "bigint")
+            if ty == "bigint":
+                return elem
+            out = self.fn.new_vreg({"str": STR, "int": INT, "bool": BOOL,
+                                    "float": FLOAT}.get(ty, OBJ))
+            fn = {"str": "rt_unbox_str", "int": "rt_unbox_int",
+                  "bool": "rt_unbox_bool", "float": "rt_unbox_float"}.get(ty)
+            if fn is None:
+                return elem
+            self.cur.add("call", out, fn, (elem,))
+            return out
         if isinstance(node.func, ast.Attribute) and node.func.attr == "endswith" \
                 and self.lw.boxed:
             desc = self.expr(node.func.value)

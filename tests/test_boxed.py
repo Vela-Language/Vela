@@ -980,6 +980,28 @@ class BoxedTests(unittest.TestCase):
         self.assertIn("-33333333333333333334 2", out)
         self.assertIn("-33333333333333333334 -2", out)
 
+    def test_boxed_module_mixed_values(self):
+        mod = os.path.join(TMPDIR, "modmix.vl")
+        with open(mod, "w", encoding="utf-8") as f:
+            f.write("MIX = 7\nNAME = \"ok\"\nFLAG = True\nPI = 1.5\n")
+        src = os.path.join(TMPDIR, "modmix_main.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("import modmix\nprint(modmix.MIX, modmix.NAME, modmix.FLAG, modmix.PI)\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"7 ok True 1.5", p.stdout)
+
+    def test_boxed_sys_modules_attribute(self):
+        mod = os.path.join(TMPDIR, "modmix2.vl")
+        with open(mod, "w", encoding="utf-8") as f:
+            f.write("MIX = 7\nNAME = \"ok\"\n")
+        src = os.path.join(TMPDIR, "sysmod_attr.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("import modmix2\nimport sys\nprint(sys.modules[\"modmix2\"].MIX, sys.modules[\"modmix2\"].NAME)\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"7 ok", p.stdout)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:

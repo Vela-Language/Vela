@@ -60,8 +60,7 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
     imported: dict[str, str] = {}
     imported_consts: dict[str, object] = {}
     module_names: set[str] = set()
-    module_objs: dict[str, dict[str, int]] = {}
-    module_strs: dict[str, dict[str, int]] = {}
+    module_index: dict[str, dict[str, tuple[int, str]]] = {}
     has_sys = False
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -79,23 +78,28 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
                 funcs, consts = _rewrite_module(sub, qual)
                 body.extend(funcs)
                 modules[alias.name] = ({f.name.rsplit("__", 1)[1] for f in funcs}, consts)
-                ints = [(n, v) for n, v in consts.items()
-                        if isinstance(v, int) and not isinstance(v, bool)]
-                if ints:
-                    module_objs[alias.name] = {n: i for i, (n, _) in enumerate(ints)}
+                values: list[tuple[str, object, str]] = []
+                for cname, cval in consts.items():
+                    if isinstance(cval, bool):
+                        cty = "bool"
+                    elif isinstance(cval, int):
+                        cty = "int" if -(2 ** 63) <= cval < 2 ** 63 else "bigint"
+                    elif isinstance(cval, str):
+                        cty = "str"
+                    elif isinstance(cval, float):
+                        cty = "float"
+                    else:
+                        continue
+                    values.append((cname, cval, cty))
+                if values:
+                    module_index[alias.name] = {
+                        n: (i, t) for i, (n, _, t) in enumerate(values)}
                     body.append(ast.Assign(
                         targets=[ast.Name(id=alias.name, ctx=ast.Store())],
-                        value=ast.List(
-                            elts=[ast.Constant(value=v) for _, v in ints],
-                            ctx=ast.Load())))
-                strs = [(n, v) for n, v in consts.items() if isinstance(v, str)]
-                if strs:
-                    module_strs[alias.name] = {n: i for i, (n, _) in enumerate(strs)}
-                    body.append(ast.Assign(
-                        targets=[ast.Name(id=alias.name + "__strs", ctx=ast.Store())],
-                        value=ast.List(
-                            elts=[ast.Constant(value=v) for _, v in strs],
-                            ctx=ast.Load())))
+                        value=ast.Call(
+                            func=ast.Name(id="__module_new", ctx=ast.Load()),
+                            args=[ast.Constant(value=v) for _, v, _ in values],
+                            keywords=[])))
             continue
         if isinstance(node, ast.ImportFrom):
             if node.module is None:
@@ -129,7 +133,35 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
                 return ast.copy_location(ast.Constant(value=imported_consts[node.id]), node)
             return node
 
+        def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+            v = node.value
+            if has_sys and isinstance(v, ast.Attribute) \
+                    and isinstance(v.value, ast.Name) and v.value.id == "sys" \
+                    and v.attr == "modules" \
+                    and isinstance(node.slice, ast.Constant) \
+                    and isinstance(node.slice.value, str) \
+                    and node.slice.value in module_index:
+                return ast.copy_location(
+                    ast.Name(id=node.slice.value, ctx=ast.Load()), node)
+            return self.generic_visit(node)
+
         def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+            v = node.value
+            if isinstance(node.ctx, ast.Load) and isinstance(v, ast.Subscript) \
+                    and isinstance(v.value, ast.Attribute) \
+                    and isinstance(v.value.value, ast.Name) \
+                    and v.value.value.id == "sys" and v.value.attr == "modules" \
+                    and isinstance(v.slice, ast.Constant) \
+                    and isinstance(v.slice.value, str) and v.slice.value in module_index \
+                    and node.attr in module_index[v.slice.value]:
+                idx, ty = module_index[v.slice.value][node.attr]
+                call = ast.Call(
+                    func=ast.Name(id="__module_get", ctx=ast.Load()),
+                    args=[ast.Name(id=v.slice.value, ctx=ast.Load()),
+                          ast.Constant(value=idx)],
+                    keywords=[])
+                call._vela_mod_ty = ty
+                return ast.copy_location(call, node)
             if isinstance(node.ctx, ast.Load) and isinstance(node.value, ast.Name) \
                     and node.value.id == "sys" and node.attr == "modules" and has_sys:
                 names = sorted(module_names | {"sys"})
@@ -139,6 +171,15 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
             if isinstance(node.ctx, ast.Load) and isinstance(node.value, ast.Name) \
                     and node.value.id in modules:
                 funcs, consts = modules[node.value.id]
+                if node.value.id in module_index and node.attr in module_index[node.value.id]:
+                    idx, ty = module_index[node.value.id][node.attr]
+                    call = ast.Call(
+                        func=ast.Name(id="__module_get", ctx=ast.Load()),
+                        args=[ast.Name(id=node.value.id, ctx=ast.Load()),
+                              ast.Constant(value=idx)],
+                        keywords=[])
+                    call._vela_mod_ty = ty
+                    return ast.copy_location(call, node)
                 if node.attr in consts:
                     return ast.copy_location(ast.Constant(value=consts[node.attr]), node)
             return self.generic_visit(node)
@@ -150,16 +191,6 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
                 funcs, consts = modules[f.value.id]
                 if f.attr in funcs:
                     node.func = ast.Name(id=f"{f.value.id}__{f.attr}", ctx=ast.Load())
-                elif f.value.id in module_strs and f.attr in module_strs[f.value.id]:
-                    return ast.copy_location(ast.Subscript(
-                        value=ast.Name(id=f.value.id + "__strs", ctx=ast.Load()),
-                        slice=ast.Constant(value=module_strs[f.value.id][f.attr]),
-                        ctx=ast.Load()), node)
-                elif f.value.id in module_objs and f.attr in module_objs[f.value.id]:
-                    return ast.copy_location(ast.Subscript(
-                        value=ast.Name(id=f.value.id, ctx=ast.Load()),
-                        slice=ast.Constant(value=module_objs[f.value.id][f.attr]),
-                        ctx=ast.Load()), node)
                 elif f.attr in consts:
                     return ast.copy_location(ast.Constant(value=consts[f.attr]), node)
             elif isinstance(f, ast.Name) and f.id in imported:

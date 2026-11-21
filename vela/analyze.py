@@ -1018,6 +1018,13 @@ class Analyzer:
         for a in node.args:
             if isinstance(a, ast.Lambda):
                 raise UnsupportedError("lambda expressions", a)
+        if name == "__module_new":
+            for a in node.args:
+                self._infer(a, env, None)
+            return "module"
+        if name == "__module_get":
+            self._infer(node.args[0], env, None)
+            return getattr(node, "_vela_mod_ty", "int")
         if name == "print":
             for a in node.args:
                 t = self._infer(a, env, None)
