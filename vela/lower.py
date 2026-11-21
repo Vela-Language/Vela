@@ -278,6 +278,13 @@ class FuncBuilder:
             return out
         raise VelaTypeError(f"cannot use {v.ty} in bigint arithmetic")
 
+    def unbox_num(self, v: VReg) -> VReg:
+        if self.dyn and v.ty == OBJ:
+            r = self.fn.new_vreg(INT, "native")
+            self.cur.add("call", r, "rt_unbox_int", (v,))
+            return r
+        return self.coerce(v, INT)
+
     def as_num(self, v: VReg) -> VReg:
         if v.ty == OBJ:
             return v
@@ -794,9 +801,9 @@ class FuncBuilder:
         start_node = None if one else args[0]
         stop_node = args[0] if one else args[1]
         step_node = None if len(args) < 3 else args[2]
-        start = self.const_int(0) if start_node is None else self.coerce(self.expr(start_node), INT)
-        stop = self.coerce(self.expr(stop_node), INT)
-        step = self.const_int(1) if step_node is None else self.coerce(self.expr(step_node), INT)
+        start = self.const_int(0) if start_node is None else self.unbox_num(self.expr(start_node))
+        stop = self.unbox_num(self.expr(stop_node))
+        step = self.const_int(1) if step_node is None else self.unbox_num(self.expr(step_node))
         step_const = self.const_int_value(step_node) if step_node is not None else 1
         if step_const == 0:
             raise VelaCompileError("range() step must not be zero", node)
@@ -848,7 +855,12 @@ class FuncBuilder:
             self.cur.add("br", None, neg, body_b.block.label, exit_b.block.label)
         self.use(body_b)
         saved = set(self.assigned)
-        self.bind(node.target.id, index, node)
+        if self.dyn:
+            idx_obj = self.fn.new_vreg(OBJ, "loop_num")
+            self.cur.add("call", idx_obj, "rt_box_int", (index,))
+            self.bind(node.target.id, idx_obj, node)
+        else:
+            self.bind(node.target.id, index, node)
         self.loops.append((inc_b.block.label, exit_b.block.label))
         for s in node.body:
             self.stmt(s)

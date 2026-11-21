@@ -40,6 +40,14 @@ class DynamicIntTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
         self.assertIn(str(-(2 ** 62) * 3).encode(), p.stdout)
 
+    def test_range_loop(self):
+        src = os.path.join(TMPDIR, "dyn_loop.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("total = 0\nfor i in range(3):\n    total = total + i\nprint(total)\n")
+        p = vela("run", "--boxed-dyn", "--strict", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"3", p.stdout)
+
     def test_add_and_compare(self):
         src = os.path.join(TMPDIR, "dyn_add.vl")
         with open(src, "w", encoding="utf-8") as f:
