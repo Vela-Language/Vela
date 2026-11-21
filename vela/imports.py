@@ -61,6 +61,7 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
     imported_consts: dict[str, object] = {}
     module_names: set[str] = set()
     module_objs: dict[str, dict[str, int]] = {}
+    module_strs: dict[str, dict[str, int]] = {}
     has_sys = False
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -86,6 +87,14 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
                         targets=[ast.Name(id=alias.name, ctx=ast.Store())],
                         value=ast.List(
                             elts=[ast.Constant(value=v) for _, v in ints],
+                            ctx=ast.Load())))
+                strs = [(n, v) for n, v in consts.items() if isinstance(v, str)]
+                if strs:
+                    module_strs[alias.name] = {n: i for i, (n, _) in enumerate(strs)}
+                    body.append(ast.Assign(
+                        targets=[ast.Name(id=alias.name + "__strs", ctx=ast.Store())],
+                        value=ast.List(
+                            elts=[ast.Constant(value=v) for _, v in strs],
                             ctx=ast.Load())))
             continue
         if isinstance(node, ast.ImportFrom):
@@ -141,6 +150,11 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
                 funcs, consts = modules[f.value.id]
                 if f.attr in funcs:
                     node.func = ast.Name(id=f"{f.value.id}__{f.attr}", ctx=ast.Load())
+                elif f.value.id in module_strs and f.attr in module_strs[f.value.id]:
+                    return ast.copy_location(ast.Subscript(
+                        value=ast.Name(id=f.value.id + "__strs", ctx=ast.Load()),
+                        slice=ast.Constant(value=module_strs[f.value.id][f.attr]),
+                        ctx=ast.Load()), node)
                 elif f.value.id in module_objs and f.attr in module_objs[f.value.id]:
                     return ast.copy_location(ast.Subscript(
                         value=ast.Name(id=f.value.id, ctx=ast.Load()),

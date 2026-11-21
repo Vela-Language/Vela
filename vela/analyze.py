@@ -570,8 +570,8 @@ class Analyzer:
                 return
             if self.boxed:
                 it_ty = self._infer(node.iter, env, None)
-                if it_ty in ("list", "tuple", "set", "dict"):
-                    env[node.target.id] = INT
+                if it_ty in ("list", "tuple", "set", "dict", "strlist"):
+                    env[node.target.id] = STR if it_ty == "strlist" else INT
                     body_env = dict(env)
                     for s in node.body:
                         self._stmt(s, body_env, rets, info)
@@ -803,6 +803,9 @@ class Analyzer:
                 if base in ("list", "tuple"):
                     self._infer(node.slice, env, INT)
                     return INT
+                if base == "strlist":
+                    self._infer(node.slice, env, INT)
+                    return STR
             raise UnsupportedError("subscripting (lists, dicts, strings)", node)
         if isinstance(node, ast.Attribute):
             raise UnsupportedError("attribute access / method calls", node)
@@ -828,10 +831,13 @@ class Analyzer:
             return "set"
         if isinstance(node, (ast.List, ast.Set)):
             if self.boxed and isinstance(node, ast.List):
-                for item in node.elts:
-                    if not isinstance(item, ast.Constant) or not isinstance(item.value, int):
-                        raise UnsupportedError("list elements other than int constants", node)
-                return "list"
+                if all(isinstance(i, ast.Constant) and isinstance(i.value, int)
+                       and not isinstance(i.value, bool) for i in node.elts):
+                    return "list"
+                if node.elts and all(isinstance(i, ast.Constant)
+                                     and isinstance(i.value, str) for i in node.elts):
+                    return "strlist"
+                raise UnsupportedError("list elements other than int/str constants", node)
             raise UnsupportedError("container literals", node)
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             raise UnsupportedError("comprehensions", node)
@@ -1016,7 +1022,7 @@ class Analyzer:
             for a in node.args:
                 t = self._infer(a, env, None)
                 allowed = (INT, FLOAT, BOOL, STR, NONE)
-                if self.boxed and t in ("list", "tuple", "set", "dict", "bytes", "bigint"):
+                if self.boxed and t in ("list", "tuple", "set", "dict", "bytes", "bigint", "strlist"):
                     allowed = allowed + (t,)
                 if t is not None and t not in allowed:
                     raise VelaTypeError(f"print() cannot print a value of type {t}", a)
@@ -1025,7 +1031,7 @@ class Analyzer:
             if len(node.args) != 1:
                 raise VelaCompileError("len() takes exactly one argument", node)
             t = self._infer(node.args[0], env, None)
-            if self.boxed and t in ("list", "tuple", "set", "dict", "bigint"):
+            if self.boxed and t in ("list", "tuple", "set", "dict", "bigint", "strlist"):
                 return INT
             if t is not None and t != STR:
                 raise VelaTypeError(f"len() requires str or list, got {t}", node)

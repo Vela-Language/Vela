@@ -171,7 +171,7 @@ class FuncBuilder:
             r = self.fn.new_vreg(BOOL)
             self.cur.add("call", r, "rt_is_true", (v,))
             return r
-        if want in ("list", "dict", "tuple", "set", "bigint") and v.ty == OBJ:
+        if want in ("list", "dict", "tuple", "set", "bigint", "strlist") and v.ty == OBJ:
             return v
         raise VelaTypeError(f"cannot convert {v.ty} to {want}")
 
@@ -324,7 +324,7 @@ class FuncBuilder:
             raise VelaCompileError(
                 f"local variable '{name}' is used before assignment", node)
         declared = self.var_types.get(name)
-        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint") and v.ty == OBJ:
+        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint", "strlist") and v.ty == OBJ:
             return v
         if self.lw.boxed and v.ty == OBJ and declared in (INT, FLOAT, BOOL, STR):
             r = self.fn.new_vreg(declared, name + "_v")
@@ -363,7 +363,7 @@ class FuncBuilder:
             self.cur.add("mov", v, value)
             self.assigned.add(name)
             return
-        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint"):
+        if self.lw.boxed and declared in ("list", "dict", "tuple", "set", "bigint", "strlist"):
             v = self.locals.get(name)
             if v is None or v.ty != OBJ:
                 v = self.fn.new_vreg(OBJ, name + "_list")
@@ -641,9 +641,17 @@ class FuncBuilder:
         self.cur.add("br", None, c, body.block.label, exit_b.block.label)
         self.use(body)
         elem = self.call_rt("rt_list_get", [obj, idx], OBJ)
-        native = self.fn.new_vreg(INT)
-        self.cur.add("call", native, "rt_unbox_int", (elem,))
-        self.bind(node.target.id, native, node)
+        iter_ty = getattr(node.iter, "_vela_ty", None)
+        if iter_ty == "strlist":
+            native = self.fn.new_vreg(STR)
+            self.cur.add("call", native, "rt_unbox_str", (elem,))
+            self.bind(node.target.id, native, node)
+        elif self.dyn and iter_ty == "list":
+            self.bind(node.target.id, elem, node)
+        else:
+            native = self.fn.new_vreg(INT)
+            self.cur.add("call", native, "rt_unbox_int", (elem,))
+            self.bind(node.target.id, native, node)
         for stmt in node.body:
             self.stmt(stmt)
         one = self.const_int(1)
@@ -670,9 +678,12 @@ class FuncBuilder:
         self.cur.add("br", None, c, body.block.label, exit_b.block.label)
         self.use(body)
         keyo = self.call_rt("rt_dict_key_at", [obj, idx], OBJ)
-        native = self.fn.new_vreg(INT)
-        self.cur.add("call", native, "rt_unbox_int", (keyo,))
-        self.bind(node.target.id, native, node)
+        if self.dyn:
+            self.bind(node.target.id, keyo, node)
+        else:
+            native = self.fn.new_vreg(INT)
+            self.cur.add("call", native, "rt_unbox_int", (keyo,))
+            self.bind(node.target.id, native, node)
         for stmt in node.body:
             self.stmt(stmt)
         one = self.const_int(1)
@@ -970,17 +981,20 @@ class FuncBuilder:
             obj = self.call_rt("rt_list_new", [n], OBJ)
             for i, item in enumerate(node.elts):
                 native = self.expr(item)
-                boxed = self.fn.new_vreg(OBJ, "list_elem")
-                self.cur.add("call", boxed, "rt_box_int", (native,))
+                boxed = self.box_scalar(native)
                 idx = self.const_int(i)
                 self.cur.add("call", None, "rt_list_set", (obj, idx, boxed))
             return obj
         if isinstance(node, ast.Subscript) and (
                 isinstance(node.value, ast.List)
-                or getattr(node.value, "_vela_ty", None) in ("list", "tuple")):
+                or getattr(node.value, "_vela_ty", None) in ("list", "tuple", "strlist")):
             obj = self.expr(node.value)
             idx = self.expr(node.slice)
             elem = self.call_rt("rt_list_get", [obj, idx], OBJ)
+            if getattr(node.value, "_vela_ty", None) == "strlist":
+                native = self.fn.new_vreg(STR)
+                self.cur.add("call", native, "rt_unbox_str", (elem,))
+                return native
             native = self.fn.new_vreg(INT)
             self.cur.add("call", native, "rt_unbox_int", (elem,))
             return native
@@ -1488,7 +1502,7 @@ class FuncBuilder:
             t = getattr(node.args[0], "_vela_ty", None)
             if self.lw.boxed and t == "dict":
                 self.cur.add("call", r, "rt_dict_len", (v,))
-            elif self.lw.boxed and t in ("list", "tuple", "set"):
+            elif self.lw.boxed and t in ("list", "tuple", "set", "strlist"):
                 self.cur.add("call", r, "rt_list_len", (v,))
             elif self.lw.boxed and t == "bigint":
                 self.cur.add("call", r, "rt_bigint_len", (v,))
@@ -1672,7 +1686,7 @@ class FuncBuilder:
                 continue
             if self.lw.boxed and (
                     isinstance(arg, (ast.List, ast.Tuple, ast.Set, ast.Dict))
-                    or getattr(arg, "_vela_ty", None) in ("list", "tuple", "set", "dict")):
+                    or getattr(arg, "_vela_ty", None) in ("list", "tuple", "set", "dict", "strlist")):
                 v = self.expr(arg)
                 self.cur.add("call", None, "rt_print_obj", (v,))
                 continue
