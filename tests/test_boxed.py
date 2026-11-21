@@ -861,6 +861,14 @@ class BoxedTests(unittest.TestCase):
         self.assertIn("1", out)
         self.assertIn("22222222222222222222", out)
 
+    def test_boxed_dict_items(self):
+        src = os.path.join(TMPDIR, "boxed_items.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("print({1: 10, 2: 20}.items())\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"[(1, 10), (2, 20)]", p.stdout)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:

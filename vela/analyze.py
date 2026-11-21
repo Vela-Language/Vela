@@ -946,7 +946,7 @@ class Analyzer:
             base = self._infer(node.func.value, env, None)
             if base == "str":
                 return STR
-        if isinstance(node.func, ast.Attribute) and node.func.attr in ("keys", "values") \
+        if isinstance(node.func, ast.Attribute) and node.func.attr in ("keys", "values", "items") \
                 and self.boxed:
             if node.args:
                 raise VelaCompileError(f"{node.func.attr}() takes no arguments", node)

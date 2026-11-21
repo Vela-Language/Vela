@@ -164,6 +164,36 @@ class FuncBuilder:
             return v
         raise VelaTypeError(f"cannot convert {v.ty} to {want}")
 
+    def dict_items_to_list(self, obj: VReg) -> VReg:
+        dst = self.call_rt("rt_list_new", [self.const_int(0)], OBJ)
+        length = self.fn.new_vreg(INT, "dict_len")
+        self.cur.add("call", length, "rt_dict_len", (obj,))
+        idx = self.fn.new_vreg(INT, "dict_i")
+        self.cur.add("mov", idx, self.const_int(0))
+        cond = self.new_block("di_cond")
+        body = self.new_block("di_body")
+        exit_b = self.new_block("di_exit")
+        self.cur.add("jmp", None, cond.block.label)
+        self.use(cond)
+        c = self.fn.new_vreg(BOOL)
+        self.cur.add("cmp", c, "lt", idx, length)
+        self.cur.add("br", None, c, body.block.label, exit_b.block.label)
+        self.use(body)
+        item = self.call_rt("rt_list_new", [self.const_int(2)], OBJ)
+        key = self.call_rt("rt_dict_key_at", [obj, idx], OBJ)
+        self.cur.add("call", None, "rt_list_set", (item, self.const_int(0), key))
+        val = self.call_rt("rt_dict_val_at", [obj, idx], OBJ)
+        self.cur.add("call", None, "rt_list_set", (item, self.const_int(1), val))
+        self.cur.add("call", None, "rt_tuple_type", (item,))
+        self.cur.add("call", None, "rt_list_append", (dst, item))
+        one = self.const_int(1)
+        ni = self.fn.new_vreg(INT)
+        self.cur.add("bin", ni, "add", idx, one)
+        self.cur.add("mov", idx, ni)
+        self.cur.add("jmp", None, cond.block.label)
+        self.use(exit_b)
+        return dst
+
     def dict_to_list(self, obj: VReg, values: bool) -> VReg:
         dst = self.call_rt("rt_list_new", [self.const_int(0)], OBJ)
         length = self.fn.new_vreg(INT, "dict_len")
@@ -1275,9 +1305,11 @@ class FuncBuilder:
                 and self.lw.boxed:
             desc = self.expr(node.func.value)
             return self.call_rt("rt_str_upper", [desc], STR)
-        if isinstance(node.func, ast.Attribute) and node.func.attr in ("keys", "values") \
+        if isinstance(node.func, ast.Attribute) and node.func.attr in ("keys", "values", "items") \
                 and self.lw.boxed:
             obj = self.expr(node.func.value)
+            if node.func.attr == "items":
+                return self.dict_items_to_list(obj)
             return self.dict_to_list(obj, node.func.attr == "values")
         if isinstance(node.func, ast.Attribute) and node.func.attr in ("count", "index") \
                 and self.lw.boxed:
