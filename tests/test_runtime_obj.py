@@ -16,7 +16,7 @@ from support import ROOT, TMPDIR
 sys.path.insert(0, ROOT)
 
 from vela.emit import emit_program
-from vela.ir import BOOL, FLOAT, INT, OBJ, Function, Program
+from vela.ir import BOOL, FLOAT, INT, OBJ, STR, Function, Program
 from vela.pe import IMAGE_BASE, DataBuilder, build_exe, layout_image
 from vela.regalloc import allocate
 from vela.runtime import Runtime, make_imports
@@ -543,6 +543,11 @@ def build_zero_div_probe() -> bytes:
 
 
 def build_bigint_probe() -> bytes:
+    rdata = DataBuilder()
+    big_off = rdata.add_str_descriptor("123456789012345678901234567890")
+    one_off = rdata.add_str_descriptor("1")
+    m1_off = rdata.add_str_descriptor("12345678901234567890")
+    m2_off = rdata.add_str_descriptor("9876543210")
     fn = Function("fn_bigint", INT)
     entry = fn.entry
     val = fn.new_vreg(INT, "val")
@@ -634,11 +639,36 @@ def build_bigint_probe() -> bytes:
     entry.add("call", r1, "rt_bigint_mod", (r1, r2))
     entry.add("call", None, "rt_print_obj", (r1,))
 
+    bd = fn.new_vreg(STR, "big_desc")
+    bo = fn.new_vreg(INT, "big_obj")
+    od = fn.new_vreg(STR, "one_desc")
+    oo = fn.new_vreg(INT, "one_obj")
+    bs = fn.new_vreg(INT, "big_sum")
+    entry.add("str", bd, big_off)
+    entry.add("call", bo, "rt_bigint_from_decimal", (bd,))
+    entry.add("str", od, one_off)
+    entry.add("call", oo, "rt_bigint_from_decimal", (od,))
+    entry.add("call", bs, "rt_bigint_add", (bo, oo))
+    entry.add("call", None, "rt_print_obj", (bs,))
+    bsub = fn.new_vreg(INT, "big_sub")
+    entry.add("call", bsub, "rt_bigint_sub", (bo, oo))
+    entry.add("call", None, "rt_print_obj", (bsub,))
+    m1d = fn.new_vreg(STR, "m1_desc")
+    m2d = fn.new_vreg(STR, "m2_desc")
+    m1o = fn.new_vreg(INT, "m1_obj")
+    m2o = fn.new_vreg(INT, "m2_obj")
+    mo = fn.new_vreg(INT, "m_obj")
+    entry.add("str", m1d, m1_off)
+    entry.add("call", m1o, "rt_bigint_from_decimal", (m1d,))
+    entry.add("str", m2d, m2_off)
+    entry.add("call", m2o, "rt_bigint_from_decimal", (m2d,))
+    entry.add("call", mo, "rt_bigint_mul", (m1o, m2o))
+    entry.add("call", None, "rt_print_obj", (mo,))
+
     entry.add("const", zero, 0)
     entry.add("ret", None, zero)
 
     program = Program(functions=[fn], main=fn)
-    rdata = DataBuilder()
     data = DataBuilder()
     imports = make_imports()
     runtime = Runtime(imports, rdata, data)
@@ -776,7 +806,10 @@ class ObjectRuntimeTests(unittest.TestCase):
         expected = (b"1234567890123" + b"0" + b"-42"
                     + b"0" + b"7" + b"12345" + b"-42"
                     + b"999999999999" * 3 + b"1000000000000"
-                    + b"1000000000000" + b"999998000001" + b"142857142857" + b"2")
+                    + b"1000000000000" + b"999998000001" + b"142857142857" + b"2"
+                    + str(123456789012345678901234567890 + 1).encode()
+                    + str(123456789012345678901234567890 - 1).encode()
+                    + str(12345678901234567890 * 9876543210).encode())
         self.assertEqual(proc.stdout, expected)
 
     def test_boxed_float(self):

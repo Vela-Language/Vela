@@ -13,8 +13,8 @@ from pathlib import Path
 from .errors import UnsupportedError
 
 
-def _module_path(name: str, filename: str) -> Path:
-    base = Path(filename).resolve().parent
+def _module_path(name: str, filename: str, base: Path | None = None) -> Path:
+    base = base or Path(filename).resolve().parent
     for suffix in (".vl", ".py"):
         p = base / (name.replace(".", "/") + suffix)
         if p.is_file():
@@ -59,28 +59,31 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
                 path = _module_path(alias.name, filename)
                 src = path.read_text(encoding="utf-8-sig")
                 sub = ast.parse(src, str(path))
-                funcs = _rewrite_module(sub, alias.name)
+                qual = alias.name.replace(".", "__")
+                funcs = _rewrite_module(sub, qual)
                 body.extend(funcs)
-                modules[alias.name] = {f.name.split("__", 1)[1] for f in funcs}
+                modules[alias.name] = {f.name.rsplit("__", 1)[1] for f in funcs}
             continue
         if isinstance(node, ast.ImportFrom):
-            if node.level:
-                raise UnsupportedError("relative imports are not supported", node)
             if node.module is None:
                 raise UnsupportedError("from . import ... is not supported", node)
-            path = _module_path(node.module, filename)
+            base = Path(filename).resolve().parent
+            for _ in range(max(node.level - 1, 0)):
+                base = base.parent
+            path = _module_path(node.module, filename, base)
             src = path.read_text(encoding="utf-8-sig")
             sub = ast.parse(src, str(path))
-            funcs = _rewrite_module(sub, node.module)
+            qual = node.module.replace(".", "__")
+            funcs = _rewrite_module(sub, qual)
             body.extend(funcs)
-            available = {f.name.split("__", 1)[1] for f in funcs}
+            available = {f.name.rsplit("__", 1)[1] for f in funcs}
             for alias in node.names:
                 if alias.asname:
                     raise UnsupportedError("from ... import ... as ... is not supported", node)
                 if alias.name not in available:
                     raise UnsupportedError(
                         f"module '{node.module}' has no function '{alias.name}'", node)
-                imported[alias.name] = f"{node.module}__{alias.name}"
+                imported[alias.name] = f"{qual}__{alias.name}"
             continue
         body.append(node)
 

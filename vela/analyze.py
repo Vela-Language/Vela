@@ -126,6 +126,108 @@ class _CallRenamer(ast.NodeTransformer):
         return node
 
 
+class _CellOuterRewriter(ast.NodeTransformer):
+    def __init__(self, mapping: dict[str, str], skip: set[int]) -> None:
+        self.mapping = mapping
+        self.skip = skip
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        return node
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        cell = self.mapping.get(node.id)
+        if cell is None:
+            return node
+        ctx = ast.Store() if isinstance(node.ctx, ast.Store) else ast.Load()
+        return ast.Subscript(
+            value=ast.Name(id=cell, ctx=ast.Load()),
+            slice=ast.Constant(value=0),
+            ctx=ctx,
+        )
+
+
+class _CellNestedRewriter(ast.NodeTransformer):
+    def __init__(self, mapping: dict[str, str]) -> None:
+        self.mapping = mapping
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        return None
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        cell = self.mapping.get(node.id)
+        if cell is None:
+            return node
+        ctx = ast.Store() if isinstance(node.ctx, ast.Store) else ast.Load()
+        return ast.Subscript(
+            value=ast.Name(id=cell, ctx=ast.Load()),
+            slice=ast.Constant(value=0),
+            ctx=ctx,
+        )
+
+
+def _apply_cells(fn: ast.FunctionDef, prefix: str) -> None:
+    """Turn ``nonlocal`` variables into one-element list cells.
+
+    The nested function receives the list object, so writes through the cell
+    stay visible to the enclosing function.  This is a real capture, not a
+    global rewrite: re-entrant calls still get independent cells.
+    """
+    nested = [s for s in fn.body if isinstance(s, ast.FunctionDef)]
+    if not nested:
+        return
+    outer_vars = {a.arg for a in fn.args.args}
+    for stmt in fn.body:
+        if isinstance(stmt, ast.Assign):
+            for t in stmt.targets:
+                if isinstance(t, ast.Name):
+                    outer_vars.add(t.id)
+    mutable: dict[str, str] = {}
+    for sub in nested:
+        for node in ast.walk(sub):
+            if isinstance(node, ast.Nonlocal):
+                for name in node.names:
+                    if name in outer_vars:
+                        mutable[name] = f"__cell_{prefix}_{name}"
+    if not mutable:
+        return
+    skip: set[int] = set()
+    for name, cell in mutable.items():
+        seed = None
+        for stmt in fn.body:
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                    and isinstance(stmt.targets[0], ast.Name) \
+                    and stmt.targets[0].id == name:
+                seed = stmt
+                break
+        if seed is not None:
+            idx = fn.body.index(seed)
+            new_seed = ast.Assign(
+                targets=[ast.Name(id=cell, ctx=ast.Store())],
+                value=ast.List(elts=[seed.value], ctx=ast.Load()),
+            )
+            fn.body[idx] = new_seed
+            skip.add(id(new_seed))
+        elif name in {a.arg for a in fn.args.args}:
+            new_seed = ast.Assign(
+                targets=[ast.Name(id=cell, ctx=ast.Store())],
+                value=ast.List(
+                    elts=[ast.Name(id=name, ctx=ast.Load())], ctx=ast.Load()),
+            )
+            fn.body.insert(0, new_seed)
+            skip.add(id(new_seed))
+        else:
+            raise UnsupportedError(
+                f"nonlocal '{name}' has no enclosing initializer", fn)
+    rewriter = _CellOuterRewriter(mutable, skip)
+    for stmt in list(fn.body):
+        if id(stmt) in skip:
+            continue
+        rewriter.visit(stmt)
+    for sub in nested:
+        _CellNestedRewriter(mutable).visit(sub)
+        ast.fix_missing_locations(sub)
+
+
 def hoist_nested_functions(tree: ast.Module) -> None:
     """Hoist directly nested defs to module level and qualify their calls.
 
@@ -167,6 +269,7 @@ def hoist_nested_functions(tree: ast.Module) -> None:
 
     for node in list(tree.body):
         if isinstance(node, ast.FunctionDef):
+            _apply_cells(node, node.name)
             walk(node, node.name)
     tree.body.extend(added)
 
@@ -563,7 +666,7 @@ class Analyzer:
             if isinstance(v, int):
                 if not -(2 ** 63) <= v < 2 ** 63:
                     if self.boxed:
-                        return INT
+                        return "bigint"
                     raise VelaTypeError("integer literal does not fit in int64", node)
                 return INT
             if isinstance(v, float):
@@ -752,6 +855,9 @@ class Analyzer:
 
     def _binop_type(self, op: ast.operator, a: str | None, b: str | None,
                     node: ast.AST) -> str:
+        if self.boxed and (a == "bigint" or b == "bigint") \
+                and isinstance(op, (ast.Add, ast.Sub, ast.Mult)):
+            return "bigint"
         if a is None and b is None:
             # Both sides are still unknown (e.g. a recursive call whose return
             # type is being inferred): assume int; a later fixpoint iteration
@@ -894,7 +1000,7 @@ class Analyzer:
             for a in node.args:
                 t = self._infer(a, env, None)
                 allowed = (INT, FLOAT, BOOL, STR, NONE)
-                if self.boxed and t in ("list", "tuple", "set", "dict", "bytes"):
+                if self.boxed and t in ("list", "tuple", "set", "dict", "bytes", "bigint"):
                     allowed = allowed + (t,)
                 if t is not None and t not in allowed:
                     raise VelaTypeError(f"print() cannot print a value of type {t}", a)

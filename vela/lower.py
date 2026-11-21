@@ -43,8 +43,13 @@ class Lowerer:
         fn = Function(info.label, OBJ if boxed_ret else native_ret)
         b = FuncBuilder(self, fn, info.name, info.var_types, info.ret_type or NONE)
         b.globals = set(info.globals)
+        b.param_names = set(info.params)
         for i, (pname, pty) in enumerate(zip(info.params, info.param_types)):
             if self.boxed and pty in (INT, FLOAT, BOOL, STR):
+                v = fn.new_vreg(OBJ, pname + "_obj")
+                fn.params.append(v)
+                fn.entry.add("arg", v, i)
+            elif self.boxed and pty in ("list", "dict", "tuple", "set"):
                 v = fn.new_vreg(OBJ, pname + "_obj")
                 fn.params.append(v)
                 fn.entry.add("arg", v, i)
@@ -96,6 +101,7 @@ class FuncBuilder:
         self.ret_ty = ret_ty
         self.globals: set[str] = set()
         self.finally_stack: list[list[ast.stmt]] = []
+        self.param_names: set[str] = set()
         self.cur = fn.entry
         self.locals: dict[str, VReg] = {}
         self.assigned: set[str] = set()
@@ -142,6 +148,8 @@ class FuncBuilder:
             r = self.fn.new_vreg(BOOL)
             self.cur.add("un", r, "bool", v)
             return r
+        if want in ("list", "dict", "tuple", "set") and v.ty == OBJ:
+            return v
         raise VelaTypeError(f"cannot convert {v.ty} to {want}")
 
     def dict_to_list(self, obj: VReg, values: bool) -> VReg:
@@ -200,6 +208,15 @@ class FuncBuilder:
         self.cur.add("mov", idx, ni)
         self.cur.add("jmp", None, cond.block.label)
         self.use(exit_b)
+
+    def as_bigint(self, v: VReg) -> VReg:
+        if v.ty == OBJ:
+            return v
+        if v.ty == INT:
+            out = self.fn.new_vreg(OBJ, "big_arg")
+            self.cur.add("call", out, "rt_bigint_from_int", (v,))
+            return out
+        raise VelaTypeError(f"cannot use {v.ty} in bigint arithmetic")
 
     def box_scalar(self, v: VReg) -> VReg:
         o = self.fn.new_vreg(OBJ, "boxed")
@@ -302,6 +319,8 @@ class FuncBuilder:
         if not self.lw.boxed:
             return
         for name, v in list(self.locals.items()):
+            if name in self.param_names:
+                continue
             if v.ty == OBJ and name in self.assigned:
                 self.cur.add("call", None, "rt_decref", (v,))
 
@@ -761,6 +780,12 @@ class FuncBuilder:
             if isinstance(v, bool):
                 return self.const_bool(v)
             if isinstance(v, int):
+                if self.lw.boxed and not -(2 ** 63) <= v < 2 ** 63:
+                    d = self.fn.new_vreg(STR, "big_desc")
+                    self.cur.add("str", d, self.lw.string_offset(str(v)))
+                    o = self.fn.new_vreg(OBJ, "big_obj")
+                    self.cur.add("call", o, "rt_bigint_from_decimal", (d,))
+                    return o
                 return self.const_int(v)
             if isinstance(v, float):
                 return self.const_float(v)
@@ -894,6 +919,16 @@ class FuncBuilder:
     def binop(self, node: ast.BinOp) -> VReg:
         left = self.expr(node.left)
         right = self.expr(node.right)
+        if self.lw.boxed and getattr(node, "_vela_ty", None) == "bigint":
+            a = self.as_bigint(left)
+            b = self.as_bigint(right)
+            label = {ast.Add: "rt_bigint_add", ast.Sub: "rt_bigint_sub",
+                     ast.Mult: "rt_bigint_mul"}.get(type(node.op))
+            if label is None:
+                raise UnsupportedError("bigint operator", node)
+            out = self.fn.new_vreg(OBJ, "big_res")
+            self.cur.add("call", out, label, (a, b))
+            return out
         if self.lw.boxed and isinstance(node.op, (ast.BitOr, ast.BitAnd)) \
                 and getattr(node.left, "_vela_ty", None) == "set" \
                 and getattr(node.right, "_vela_ty", None) == "set":
@@ -1346,6 +1381,10 @@ class FuncBuilder:
                 self.cur.add("call", o, "rt_box_bytes", (d,))
                 self.cur.add("call", None, "rt_print_obj", (o,))
                 self.cur.add("call", None, "rt_decref", (o,))
+                continue
+            if self.lw.boxed and getattr(arg, "_vela_ty", None) == "bigint":
+                v = self.expr(arg)
+                self.cur.add("call", None, "rt_print_obj", (v,))
                 continue
             if self.lw.boxed and (
                     isinstance(arg, (ast.List, ast.Tuple, ast.Set, ast.Dict))

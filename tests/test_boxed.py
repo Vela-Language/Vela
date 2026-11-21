@@ -691,6 +691,48 @@ class BoxedTests(unittest.TestCase):
         self.assertEqual(p.returncode, 1)
         self.assertIn(b"boom", p.stdout + p.stderr)
 
+    def test_boxed_nonlocal_cell(self):
+        src = os.path.join(TMPDIR, "boxed_nonlocal.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("def outer():\n    x = 0\n    def inc():\n        nonlocal x\n        x = x + 1\n    inc()\n    inc()\n    return x\nprint(outer())\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"2", p.stdout)
+
+    def test_boxed_package_import(self):
+        pkg = os.path.join(TMPDIR, "pkg")
+        os.makedirs(pkg, exist_ok=True)
+        with open(os.path.join(pkg, "mod.vl"), "w", encoding="utf-8") as f:
+            f.write("def add(a, b):\n    return a + b\n")
+        src = os.path.join(TMPDIR, "pkg_import.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("from pkg.mod import add\nprint(add(40, 2))\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"42", p.stdout)
+
+    def test_boxed_relative_import(self):
+        mod = os.path.join(TMPDIR, "relmod.vl")
+        with open(mod, "w", encoding="utf-8") as f:
+            f.write("def inc(x):\n    return x + 1\n")
+        src = os.path.join(TMPDIR, "rel_import.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("from .relmod import inc\nprint(inc(41))\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"42", p.stdout)
+
+    def test_boxed_bigint_arithmetic(self):
+        src = os.path.join(TMPDIR, "boxed_bigexpr.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("print(99999999999999999999 + 1)\nprint(99999999999999999999 - 1)\nprint(12345678901234567890 * 9876543210)\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        out = p.stdout.decode("utf-8", "replace")
+        self.assertIn(str(99999999999999999999 + 1), out)
+        self.assertIn(str(99999999999999999999 - 1), out)
+        self.assertIn(str(12345678901234567890 * 9876543210), out)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:
