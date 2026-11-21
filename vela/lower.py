@@ -262,7 +262,7 @@ class FuncBuilder:
         self.cur.add("jmp", None, cond.block.label)
         self.use(exit_b)
 
-    def bigint_divmod_ir(self, a: VReg, b: VReg, want_quotient: bool) -> VReg:
+    def bigint_divmod_ir(self, a: VReg, b: VReg, want_quotient: bool | None):
         self.cur.add("call", None, "rt_bigint_require",
                      (a, self.const_int(1)))
         self.cur.add("call", None, "rt_bigint_require",
@@ -333,7 +333,72 @@ class FuncBuilder:
         self.cur.add("mov", i, ni)
         self.cur.add("jmp", None, outer.block.label)
         self.use(done)
+        if want_quotient is None:
+            return (q, rem)
         return q if want_quotient else rem
+
+    def bigint_floor_divmod(self, a: VReg, b: VReg):
+        zero = self.call_rt("rt_box_int", [self.const_int(0)], OBJ)
+        one = self.call_rt("rt_box_int", [self.const_int(1)], OBJ)
+        aa = self.call_rt("rt_num_abs", [a], OBJ)
+        bb = self.call_rt("rt_num_abs", [b], OBJ)
+        qmag, rmag = self.bigint_divmod_ir(aa, bb, None)
+        ca = self.call_rt("rt_num_cmp", [a, zero], INT)
+        cb = self.call_rt("rt_num_cmp", [b, zero], INT)
+        na = self.fn.new_vreg(BOOL, "div_na")
+        nb = self.fn.new_vreg(BOOL, "div_nb")
+        self.cur.add("cmp", na, "lt", ca, self.const_int(0))
+        self.cur.add("cmp", nb, "lt", cb, self.const_int(0))
+        same = self.fn.new_vreg(BOOL, "div_same")
+        self.cur.add("cmp", same, "eq", na, nb)
+        qout = self.fn.new_vreg(OBJ, "div_q")
+        rout = self.fn.new_vreg(OBJ, "div_r")
+        same_b = self.new_block("div_same")
+        diff_b = self.new_block("div_diff")
+        rpos_b = self.new_block("div_rpos")
+        rneg_b = self.new_block("div_rneg")
+        qminus_b = self.new_block("div_qminus")
+        qzero_b = self.new_block("div_qzero")
+        bpos_b = self.new_block("div_bpos")
+        bneg_b = self.new_block("div_bneg")
+        final_b = self.new_block("div_final")
+        self.cur.add("br", None, same, same_b.block.label, diff_b.block.label)
+
+        self.use(same_b)
+        self.cur.add("mov", qout, qmag)
+        self.cur.add("br", None, nb, rneg_b.block.label, rpos_b.block.label)
+        self.use(rpos_b)
+        self.cur.add("mov", rout, rmag)
+        self.cur.add("jmp", None, final_b.block.label)
+        self.use(rneg_b)
+        rn = self.call_rt("rt_num_neg", [rmag], OBJ)
+        self.cur.add("mov", rout, rn)
+        self.cur.add("jmp", None, final_b.block.label)
+
+        self.use(diff_b)
+        qn = self.call_rt("rt_num_neg", [qmag], OBJ)
+        rz = self.call_rt("rt_num_cmp", [rmag, zero], INT)
+        nz = self.fn.new_vreg(BOOL, "div_nz")
+        self.cur.add("cmp", nz, "ne", rz, self.const_int(0))
+        self.cur.add("br", None, nz, qminus_b.block.label, qzero_b.block.label)
+        self.use(qminus_b)
+        q1 = self.call_rt("rt_num_sub", [qn, one], OBJ)
+        self.cur.add("mov", qout, q1)
+        base = self.call_rt("rt_num_sub", [bb, rmag], OBJ)
+        self.cur.add("br", None, nb, bneg_b.block.label, bpos_b.block.label)
+        self.use(bpos_b)
+        self.cur.add("mov", rout, base)
+        self.cur.add("jmp", None, final_b.block.label)
+        self.use(bneg_b)
+        rn2 = self.call_rt("rt_num_neg", [base], OBJ)
+        self.cur.add("mov", rout, rn2)
+        self.cur.add("jmp", None, final_b.block.label)
+        self.use(qzero_b)
+        self.cur.add("mov", qout, qn)
+        self.cur.add("mov", rout, rmag)
+        self.cur.add("jmp", None, final_b.block.label)
+        self.use(final_b)
+        return qout, rout
 
     def const_bigint(self, value: int) -> VReg:
         d = self.fn.new_vreg(STR, "big_desc")
@@ -1198,9 +1263,10 @@ class FuncBuilder:
                     raise VelaCompileError("division by zero", node)
                 value = a // b if isinstance(node.op, ast.FloorDiv) else a % b
                 return self.const_bigint(value)
-            return self.bigint_divmod_ir(
-                self.expr(node.left), self.expr(node.right),
-                isinstance(node.op, ast.FloorDiv))
+            la_expr = self.expr(node.left)
+            lb_expr = self.expr(node.right)
+            qv, rv = self.bigint_floor_divmod(la_expr, lb_expr)
+            return qv if isinstance(node.op, ast.FloorDiv) else rv
         left = self.expr(node.left)
         right = self.expr(node.right)
         if self.lw.boxed and "bigint" in (
