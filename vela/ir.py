@@ -30,10 +30,11 @@ FLOAT = "float"
 BOOL = "bool"
 STR = "str"
 NONE = "none"
+OBJ = "obj"              # 64-bit pointer to a runtime object (boxed Value)
 UNKNOWN = "unknown"
 
 NUMERIC = (INT, FLOAT)
-GPR_TYPES = (INT, BOOL, STR)
+GPR_TYPES = (INT, BOOL, STR, OBJ)
 XMM_TYPES = (FLOAT,)
 
 OP_INFIX = {
