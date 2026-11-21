@@ -124,3 +124,23 @@ git push -u origin develop
 - 不在 `develop` 上打正式版 tag；
 - 不让源码版本号与 tag 不一致；
 - 不跳过 `setup.exe`（Inno Setup 缺失时必须失败，而不是只发 tar.gz）。
+
+
+## 8. 本地构建（-local.N）
+
+每完成一轮本地改动，运行：
+
+```powershell
+python tools\local_build.py
+```
+
+规则：
+
+- base = 远端最新 Pre-Release（例如 `0.3.0-dev.1`）；
+- 本地版本 = `<base>-local.<N>`，每次构建 N 递增；
+- 远端出现新的 Pre-Release 后 base 变化，N 重置为 1；
+- 构建产物：`dist\vela.cmd` + `dist\local\vela\`（已注入本地版本号）；
+- 机器 PATH 已包含 `I:\Project\Vela-Lang\dist`，任意目录可直接运行 `vela`；
+- 当前 shell 的 PATH 若早于该配置，需要重开终端或临时前置。
+
+`vela version` 会打印本地版本，例如 `0.3.0-dev.1-local.2`。
