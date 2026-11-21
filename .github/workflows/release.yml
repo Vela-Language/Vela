@@ -141,6 +141,20 @@ jobs:
               --notes-file release_notes.md --latest
           }
 
+      - name: Prune older dev releases
+        if: steps.check.outputs.skip != 'true' && steps.meta.outputs.prerelease == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $current = "${{ steps.meta.outputs.tag }}"
+          $tags = gh release list --limit 100 --json tagName,isPrerelease --jq '.[] | select(.isPrerelease) | .tagName'
+          foreach ($t in $tags) {
+            if ($t -ne $current -and $t -like "*-dev.*") {
+              gh release delete "$t" --yes --cleanup-tag
+            }
+          }
+
       - name: Sync README version
         if: steps.check.outputs.skip != 'true'
         shell: pwsh

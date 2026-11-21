@@ -71,6 +71,8 @@ PR 到 `develop` 或 `master` 都会触发 CI（不含发布）。
 - 如果同名 Release 已存在，发布步骤会跳过（不覆盖、不重复打 tag）；
 - 发布使用 `GITHUB_TOKEN`，不需要额外 secret。
 
+- 每次发布新的 dev Pre-Release 后，自动删除上一个 dev Release 及其 tag，仓库只保留最新一个 dev 版本；
+
 ## 4. 发布产物
 
 每个 Release 都包含：
