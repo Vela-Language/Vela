@@ -820,6 +820,59 @@ def build_list_probe() -> bytes:
                      entry_off=asm.labels["_start"])
 
 
+def build_gc_child_probe() -> bytes:
+    fn = Function("fn_gcchild", INT)
+    entry = fn.entry
+    parent = fn.new_vreg(OBJ, "parent")
+    child = fn.new_vreg(OBJ, "child")
+    got = fn.new_vreg(OBJ, "got")
+    length = fn.new_vreg(INT, "length")
+    one = fn.new_vreg(INT, "one")
+    zero = fn.new_vreg(INT, "zero")
+    idx = fn.new_vreg(INT, "idx")
+    cond = fn.new_vreg(BOOL, "cond")
+    ok = fn.new_block("ok")
+    bad = fn.new_block("bad")
+    entry.add("const", one, 1)
+    entry.add("const", zero, 0)
+    entry.add("call", parent, "rt_list_new", (one,))
+    entry.add("call", child, "rt_list_new", (zero,))
+    entry.add("const", idx, 0)
+    entry.add("call", None, "rt_list_set", (parent, idx, child))
+    entry.add("call", None, "rt_gc_push_root", (parent,))
+    entry.add("call", None, "rt_gc_collect", ())
+    entry.add("call", got, "rt_list_get", (parent, idx))
+    entry.add("call", length, "rt_list_len", (got,))
+    entry.add("cmp", cond, "eq", length, zero)
+    entry.add("br", None, cond, ok.label, bad.label)
+    ok.add("call", None, "rt_gc_pop_root", ())
+    ok.add("ret", None, zero)
+    bad.add("ret", None, one)
+
+    program = Program(functions=[fn], main=fn)
+    rdata = DataBuilder()
+    data = DataBuilder()
+    imports = make_imports()
+    runtime = Runtime(imports, rdata, data)
+    asm = Asm()
+    runtime.emit(asm)
+    allocs = {fn.name: allocate(fn)}
+    emit_program(asm, program.functions, allocs, runtime, itertools.count())
+    asm.bind("_start")
+    asm.and_rsp(-16)
+    asm.sub_rsp(32)
+    asm.call(runtime.RT_INIT)
+    asm.call(fn.name)
+    asm.mov_ri("rcx", 0)
+    asm.call_iat(("idata", imports.slot("kernel32.dll", "ExitProcess")))
+    rdata_bytes = bytes(rdata.buf)
+    data_bytes = bytes(data.buf)
+    lay = layout_image(bytes(asm.b), rdata_bytes, data_bytes, imports)
+    asm.resolve(IMAGE_BASE, lay.rvas)
+    return build_exe(bytes(asm.b), rdata_bytes, data_bytes, imports,
+                     entry_off=asm.labels["_start"])
+
+
 class ObjectRuntimeTests(unittest.TestCase):
     def test_obj_type_regalloc(self):
         fn = Function("fn_objarg", OBJ)
@@ -914,6 +967,14 @@ class ObjectRuntimeTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
         self.assertEqual(proc.stderr, b"")
         self.assertEqual(proc.stdout, b"3.5")
+
+    def test_gc_child_marking(self):
+        exe = build_gc_child_probe()
+        path = os.path.join(TMPDIR, "gcchild.exe")
+        with open(path, "wb") as f:
+            f.write(exe)
+        proc = subprocess.run([path], capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
 
     def test_refcounted_alloc(self):
         exe = build_object_probe()
