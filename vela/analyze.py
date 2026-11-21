@@ -873,7 +873,7 @@ class Analyzer:
             return "bigint"
         if self.boxed and a == "bigint" and b in (INT, BOOL) \
                 and isinstance(op, (ast.FloorDiv, ast.Mod)):
-            return "bigint" if isinstance(op, ast.FloorDiv) else INT
+            return "bigint"
         if self.boxed and a == "bigint" and b == "bigint" \
                 and isinstance(op, (ast.FloorDiv, ast.Mod)):
             return "bigint"

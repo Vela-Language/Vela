@@ -806,13 +806,15 @@ class BoxedTests(unittest.TestCase):
         self.assertIn(str(99999999999999999999 // 777777777777777777), out)
         self.assertIn(str(99999999999999999999 % 777777777777777777), out)
 
-    def test_boxed_bigint_div_too_large(self):
-        src = os.path.join(TMPDIR, "boxed_bigdiv_too_large.vl")
+    def test_boxed_bigint_div_large_divisor(self):
+        src = os.path.join(TMPDIR, "boxed_bigdiv_large_divisor.vl")
         with open(src, "w", encoding="utf-8") as f:
-            f.write("print(99999999999999999999 // 7777777777777777777)\n")
+            f.write("print(99999999999999999999 // 7777777777777777777, 99999999999999999999 % 7777777777777777777)\n")
         p = vela("run", "--boxed", src)
-        self.assertEqual(p.returncode, 1)
-        self.assertIn(b"bigint too large", p.stderr + p.stdout)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        out = p.stdout.decode("utf-8", "replace")
+        self.assertIn(str(99999999999999999999 // 7777777777777777777), out)
+        self.assertIn(str(99999999999999999999 % 7777777777777777777), out)
 
     def test_boxed_bigint_len(self):
         src = os.path.join(TMPDIR, "boxed_biglen.vl")
@@ -966,6 +968,17 @@ class BoxedTests(unittest.TestCase):
         self.assertIn("-2", out)
         self.assertIn("55555555555555555555", out)
         self.assertIn("-55555555555555555555", out)
+
+    def test_boxed_bigint_small_div_signs(self):
+        src = os.path.join(TMPDIR, "boxed_bigsmall_div.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("a = 100000000000000000000\nprint(a // 3, a % 3)\nprint((0 - a) // 3, (0 - a) % 3)\nprint(a // (0 - 3), a % (0 - 3))\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        out = p.stdout.decode("utf-8", "replace")
+        self.assertIn("33333333333333333333 1", out)
+        self.assertIn("-33333333333333333334 2", out)
+        self.assertIn("-33333333333333333334 -2", out)
 
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")

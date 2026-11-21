@@ -1276,15 +1276,8 @@ class FuncBuilder:
             a = self.as_bigint(left)
             b = self.as_bigint(right)
             if isinstance(node.op, (ast.FloorDiv, ast.Mod)):
-                if right.ty != INT:
-                    raise UnsupportedError("bigint division needs an int divisor", node)
-                if isinstance(node.op, ast.FloorDiv):
-                    out = self.fn.new_vreg(OBJ, "big_div")
-                    self.cur.add("call", out, "rt_bigint_div_small", (a, right))
-                    return out
-                res = self.fn.new_vreg(INT, "big_mod")
-                self.cur.add("call", res, "rt_bigint_mod_small", (a, right))
-                return res
+                qv, rv = self.bigint_floor_divmod(a, b)
+                return qv if isinstance(node.op, ast.FloorDiv) else rv
             label = {ast.Add: "rt_bigint_add", ast.Sub: "rt_bigint_sub",
                      ast.Mult: "rt_bigint_mul"}.get(type(node.op))
             if label is None:
