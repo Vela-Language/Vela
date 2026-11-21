@@ -690,6 +690,7 @@ class BoxedTests(unittest.TestCase):
         p = vela("run", "--boxed", src)
         self.assertEqual(p.returncode, 1)
         self.assertIn(b"boom", p.stdout + p.stderr)
+        self.assertIn(b"line 1", p.stdout + p.stderr)
 
     def test_boxed_nonlocal_cell(self):
         src = os.path.join(TMPDIR, "boxed_nonlocal.vl")
@@ -732,6 +733,40 @@ class BoxedTests(unittest.TestCase):
         self.assertIn(str(99999999999999999999 + 1), out)
         self.assertIn(str(99999999999999999999 - 1), out)
         self.assertIn(str(12345678901234567890 * 9876543210), out)
+
+    def test_boxed_unhandled_function(self):
+        src = os.path.join(TMPDIR, "boxed_unhandled_fn.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("def boom():\n    raise ValueError(\"bad\")\nboom()\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 1)
+        combined = p.stdout + p.stderr
+        self.assertIn(b"bad", combined)
+        self.assertIn(b"in boom", combined)
+        self.assertIn(b"line 2", combined)
+
+    def test_boxed_bigint_division(self):
+        src = os.path.join(TMPDIR, "boxed_bigdiv.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("print(99999999999999999999 // 7, 99999999999999999999 % 7)\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        out = p.stdout.decode("utf-8", "replace")
+        self.assertIn(str(99999999999999999999 // 7), out)
+        self.assertIn(str(99999999999999999999 % 7), out)
+
+    def test_boxed_module_constant(self):
+        mod = os.path.join(TMPDIR, "constmod.vl")
+        with open(mod, "w", encoding="utf-8") as f:
+            f.write("VALUE = 7\nNAME = \"ok\"\n")
+        src = os.path.join(TMPDIR, "const_import.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("import constmod\nprint(constmod.VALUE, constmod.NAME)\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        out = p.stdout.decode("utf-8", "replace")
+        self.assertIn("7", out)
+        self.assertIn("ok", out)
 
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")

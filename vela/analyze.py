@@ -858,6 +858,9 @@ class Analyzer:
         if self.boxed and (a == "bigint" or b == "bigint") \
                 and isinstance(op, (ast.Add, ast.Sub, ast.Mult)):
             return "bigint"
+        if self.boxed and a == "bigint" and b in (INT, BOOL) \
+                and isinstance(op, (ast.FloorDiv, ast.Mod)):
+            return "bigint" if isinstance(op, ast.FloorDiv) else INT
         if a is None and b is None:
             # Both sides are still unknown (e.g. a recursive call whose return
             # type is being inferred): assume int; a later fixpoint iteration

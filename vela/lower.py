@@ -60,6 +60,10 @@ class Lowerer:
             b.locals[pname] = v
             b.assigned.add(pname)
         if self.boxed:
+            fname = fn.new_vreg(STR, "func_name")
+            fn.entry.add("str", fname, self.string_offset(info.name))
+            fn.entry.add("call", None, "rt_set_func", (fname,))
+        if self.boxed:
             zero = fn.new_vreg(INT, "zero_slot")
             fn.entry.add("const", zero, 0)
             for name, ty in info.var_types.items():
@@ -76,6 +80,10 @@ class Lowerer:
         fn = Function("fn___vela_main__", NONE)
         b = FuncBuilder(self, fn, "__main__", self.an.main_vars, NONE)
         b.globals = set(self.mutable_globals)
+        if self.boxed:
+            mname = fn.new_vreg(STR, "func_name")
+            fn.entry.add("str", mname, self.string_offset("__main__"))
+            fn.entry.add("call", None, "rt_set_func", (mname,))
         for stmt in self.an.tree.body:
             if isinstance(stmt, ast.FunctionDef):
                 continue
@@ -666,6 +674,8 @@ class FuncBuilder:
             desc = self.expr(node.exc.args[0])
             code_val = {"ValueError": 1, "TypeError": 2}.get(node.exc.func.id, 1)
         code = self.const_int(code_val)
+        line = self.const_int(node.lineno)
+        self.cur.add("call", None, "rt_set_line", (line,))
         self.cur.add("call", None, "rt_raise", (code, desc))
         dead = self.new_block("after_raise")
         self.cur.add("jmp", None, dead.block.label)
@@ -919,9 +929,22 @@ class FuncBuilder:
     def binop(self, node: ast.BinOp) -> VReg:
         left = self.expr(node.left)
         right = self.expr(node.right)
-        if self.lw.boxed and getattr(node, "_vela_ty", None) == "bigint":
+        if self.lw.boxed and "bigint" in (
+                getattr(node, "_vela_ty", None),
+                getattr(node.left, "_vela_ty", None),
+                getattr(node.right, "_vela_ty", None)):
             a = self.as_bigint(left)
             b = self.as_bigint(right)
+            if isinstance(node.op, (ast.FloorDiv, ast.Mod)):
+                if right.ty != INT:
+                    raise UnsupportedError("bigint division needs an int divisor", node)
+                if isinstance(node.op, ast.FloorDiv):
+                    out = self.fn.new_vreg(OBJ, "big_div")
+                    self.cur.add("call", out, "rt_bigint_div_small", (a, right))
+                    return out
+                res = self.fn.new_vreg(INT, "big_mod")
+                self.cur.add("call", res, "rt_bigint_mod_small", (a, right))
+                return res
             label = {ast.Add: "rt_bigint_add", ast.Sub: "rt_bigint_sub",
                      ast.Mult: "rt_bigint_mul"}.get(type(node.op))
             if label is None:
