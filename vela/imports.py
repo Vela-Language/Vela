@@ -59,11 +59,17 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
     modules: dict[str, tuple[set[str], dict[str, object]]] = {}
     imported: dict[str, str] = {}
     imported_consts: dict[str, object] = {}
+    module_names: set[str] = set()
+    has_sys = False
     for node in tree.body:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.asname:
                     raise UnsupportedError("import ... as ... is not supported", node)
+                if alias.name == "sys":
+                    has_sys = True
+                    continue
+                module_names.add(alias.name)
                 path = _module_path(alias.name, filename)
                 src = path.read_text(encoding="utf-8-sig")
                 sub = ast.parse(src, str(path))
@@ -87,6 +93,7 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
             available = {f.name.rsplit("__", 1)[1] for f in funcs}
             for cname, cval in consts.items():
                 imported_consts[cname] = cval
+            module_names.add(node.module)
             for alias in node.names:
                 if alias.asname:
                     raise UnsupportedError("from ... import ... as ... is not supported", node)
@@ -104,6 +111,12 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
             return node
 
         def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+            if isinstance(node.ctx, ast.Load) and isinstance(node.value, ast.Name) \
+                    and node.value.id == "sys" and node.attr == "modules" and has_sys:
+                names = sorted(module_names | {"sys"})
+                return ast.copy_location(ast.Dict(
+                    keys=[ast.Constant(value=n) for n in names],
+                    values=[ast.Constant(value=1) for _ in names]), node)
             if isinstance(node.ctx, ast.Load) and isinstance(node.value, ast.Name) \
                     and node.value.id in modules:
                 funcs, consts = modules[node.value.id]

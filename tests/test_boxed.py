@@ -879,6 +879,17 @@ class BoxedTests(unittest.TestCase):
         self.assertIn("1", out)
         self.assertIn(str(100000000000000000000 % 77777777777777777777), out)
 
+    def test_boxed_sys_modules_registry(self):
+        mod = os.path.join(TMPDIR, "sysmod_mod.vl")
+        with open(mod, "w", encoding="utf-8") as f:
+            f.write("VALUE = 7\n")
+        src = os.path.join(TMPDIR, "sysmod_main.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("import sysmod_mod\nimport sys\nprint(\"sysmod_mod\" in sys.modules, \"sys\" in sys.modules, len(sys.modules))\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"True True 2", p.stdout)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:
