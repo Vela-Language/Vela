@@ -55,10 +55,19 @@ PR 到 `develop` 或 `master` 都会触发 CI（不含发布）。
 
 | 分支 | 版本 | Tag | Release 类型 |
 | --- | --- | --- | --- |
-| `develop` | `<base>-dev.<run_number>` | `v<base>-dev.<run_number>` | Pre-Release |
+| `develop` | `<base>-dev.<N>` | `v<base>-dev.<N>` | Pre-Release |
 | `master` | `<base>` | `v<base>` | Latest |
 
-- `<base>` 是仓库里的 `x.y.z`；`run_number` 是 GitHub Actions 运行序号，天然唯一；
+- `<base>` 是仓库里的 `x.y.z`，即"下一个待发布的稳定版本"，不是当前 Latest；
+- `N` 在同一 base 内从 1 开始递增；base 变化时重置为 1。
+  例如 Latest 为 `v0.1.0`、源码版本已 bump 到 `0.1.1` 时，开发版为
+  `v0.1.1-dev.1`、`v0.1.1-dev.2`……；等 `v0.1.1` 发布后源码 bump 到 `0.1.2`，
+  开发版重新从 `v0.1.2-dev.1` 开始；
+- `N` 由已有 tag 计算（`tools/dev_version.py`），不使用全局 run_number，
+  失败的运行不会造成逻辑序号跳号；
+- 开发分支的源码版本必须领先于 Latest：若 `x.y.z` 已经是 Latest，push `develop`
+  会被 workflow 拒绝。稳定版发布后，必须先把源码版本 bump 到下一个版本
+  （例如 `0.1.1 → 0.1.2`）再继续开发；
 - 如果同名 Release 已存在，发布步骤会跳过（不覆盖、不重复打 tag）；
 - 发布使用 `GITHUB_TOKEN`，不需要额外 secret。
 

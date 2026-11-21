@@ -25,9 +25,10 @@ class CliTests(unittest.TestCase):
         return path
 
     def test_version(self):
+        from vela import __version__
         p = vela("version")
         self.assertEqual(p.returncode, 0)
-        self.assertIn(b"Vela 0.1.0", p.stdout)
+        self.assertIn(f"Vela {__version__}".encode(), p.stdout)
 
     def test_build_and_run(self):
         src = self.write("cli_hello.py", "print(6 * 7)\n")
