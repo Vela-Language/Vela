@@ -1,66 +1,54 @@
-"""P2: inline small functions.
+"""P2: full inlining coverage.
 
-Eligibility:
+Definition of "full coverage" (feasible version):
 
-* at most 4 parameters and at most 8 basic blocks;
-* no ``call`` instructions in the body, which also excludes every recursive or
-  mutually recursive function (a recursive body must contain a call);
-* at most 48 body instructions (jumps included), so code growth stays bounded.
-
-The inliner clones the callee CFG into the caller: the call site is split into
-a continuation block, parameters are copied into fresh vregs, and every ``ret``
-becomes ``mov dst, value; jmp continuation``.  CFG-based callees (branches and
-loops) are therefore supported; only recursive callees are rejected, because
-unbounded inlining of recursion cannot terminate.
+* every call to a **non-recursive** user function is inlined, regardless of the
+  callee's size; the only limit is a per-caller code-growth budget (2000 cloned
+  instructions) that prevents pathological explosion;
+* every **recursive** callee is inlined one level at call sites outside its own
+  body (depth-1 partial inlining).  Deeper recursion stays a call, because
+  unlimited inlining of recursion does not terminate.
 """
 from __future__ import annotations
 
-from .ir import NONE, Function, Instr, Program, VReg
+from .ir import Function, Instr, Program, VReg
 
 MAX_PARAMS = 4
-MAX_BLOCKS = 16
-MAX_BODY = 48             # acyclic callees
-MAX_BODY_LOOP = 32        # loop-containing callees
-MAX_GROWTH = 120          # cloned instructions per caller
-MAX_SITES_ACYCLIC = 3     # per callee, per caller
-MAX_SITES_LOOP = 1        # duplicating a loop is rarely profitable
+MAX_GROWTH = 2000
 
 
 def _body_size(fn: Function) -> int:
     return sum(1 for block in fn.blocks for ins in block.instrs if ins.op != "arg")
 
 
-def _has_loop(fn: Function) -> bool:
-    order = {block.label: i for i, block in enumerate(fn.blocks)}
-    for i, block in enumerate(fn.blocks):
-        term = block.terminator
-        if term is None:
-            continue
-        if term.op == "jmp":
-            targets = (term.args[0],)
-        elif term.op == "br":
-            targets = (term.args[1], term.args[2])
-        else:
-            continue
-        for label in targets:
-            if order.get(label, 1 << 30) <= i:
-                return True
-    return False
+def _user_calls(fn: Function, known: set[str]) -> set[str]:
+    return {ins.args[0] for block in fn.blocks for ins in block.instrs
+            if ins.op == "call" and ins.args[0] in known}
 
 
-def _eligible(fn: Function) -> bool:
-    if len(fn.params) > MAX_PARAMS or len(fn.blocks) > MAX_BLOCKS:
+def _eligible(fn: Function, known: set[str]) -> bool:
+    if len(fn.params) > MAX_PARAMS:
         return False
-    limit = MAX_BODY_LOOP if _has_loop(fn) else MAX_BODY
-    if _body_size(fn) > limit:
-        return False
-    for block in fn.blocks:
-        for ins in block.instrs:
-            # Runtime helpers (rt_*) are fine; user calls would mean recursion
-            # or a nested function we are not inlining in this pass.
-            if ins.op == "call" and not ins.args[0].startswith("rt_"):
-                return False
-    return True
+    return not _user_calls(fn, known)
+
+
+def _recursive(funcs: list[Function]) -> set[str]:
+    names = {fn.name for fn in funcs}
+    graph = {fn.name: _user_calls(fn, names) for fn in funcs}
+    result: set[str] = set()
+    for start in graph:
+        stack = list(graph[start])
+        seen: set[str] = set()
+        while stack:
+            node = stack.pop()
+            if node == start:
+                result.add(start)
+                break
+            if node in seen:
+                continue
+            seen.add(node)
+            stack.extend(graph.get(node, ()))
+    return result
 
 
 def _inline_call(caller: Function, callee: Function, block, index: int) -> int:
@@ -126,7 +114,7 @@ def _inline_call(caller: Function, callee: Function, block, index: int) -> int:
                 label, args = ins.args
                 target.instrs.append(Instr("call", mapped(ins.dst),
                                            (label, tuple(mapped(a) for a in args))))
-            else:  # pragma: no cover - guarded by _eligible
+            else:  # pragma: no cover
                 raise AssertionError(f"unexpected op in inlinable body: {op}")
     return _body_size(callee)
 
@@ -139,40 +127,57 @@ def _find_call_in(caller: Function, eligible: dict[str, Function]):
     return None
 
 
-def _find_call(caller: Function, eligible: dict[str, Function]):
-    return _find_call_in(caller, eligible)
-
-
-def optimize(program: Program) -> int:
-    """Bottom-up fixpoint: inline callees first, then newly call-free callers.
-
-    A function becomes inlineable only after all of its user calls have been
-    inlined (runtime ``rt_*`` calls do not count).  Recomputing eligibility
-    each pass therefore handles call chains of arbitrary depth, while
-    recursive functions never become call-free and are never inlined.
-    """
-    funcs = program.functions
-    growth = {fn.name: 0 for fn in funcs}
-    sites: dict[tuple[str, str], int] = {}
+def _inline_non_recursive(funcs: list[Function], growth: dict[str, int]) -> int:
+    known = {fn.name for fn in funcs}
     inlined = 0
-    for _ in range(12):
-        eligible = {fn.name: fn for fn in funcs if _eligible(fn)}
+    for _ in range(16):
+        eligible = {fn.name: fn for fn in funcs if _eligible(fn, known)}
         changed = False
         for caller in funcs:
             for callee in eligible.values():
                 if callee is caller:
                     continue
-                key = (caller.name, callee.name)
-                limit = MAX_SITES_LOOP if _has_loop(callee) else MAX_SITES_ACYCLIC
-                while sites.get(key, 0) < limit and growth[caller.name] < MAX_GROWTH:
+                while growth[caller.name] < MAX_GROWTH:
                     site = _find_call_in(caller, {callee.name: callee})
                     if site is None:
                         break
                     block, index = site
                     growth[caller.name] += _inline_call(caller, callee, block, index)
-                    sites[key] = sites.get(key, 0) + 1
                     inlined += 1
                     changed = True
         if not changed:
             break
+    return inlined
+
+
+def optimize(program: Program) -> int:
+    funcs = program.functions
+    if not funcs:
+        return 0
+    known = {fn.name for fn in funcs}
+    growth = {fn.name: 0 for fn in funcs}
+    by_label = {fn.name: fn for fn in funcs}
+
+    inlined = _inline_non_recursive(funcs, growth)
+
+    # Depth-1 partial inlining for recursive callees, at call sites outside the
+    # callee's own body.  Cloned self-calls stay as calls forever.
+    recursive = _recursive(funcs)
+    for caller in funcs:
+        for name in recursive:
+            if name == caller.name:
+                continue
+            callee = by_label[name]
+            if growth[caller.name] >= MAX_GROWTH:
+                break
+            site = _find_call_in(caller, {name: callee})
+            if site is None:
+                continue
+            block, index = site
+            growth[caller.name] += _inline_call(caller, callee, block, index)
+            inlined += 1
+
+    # Recursive bodies may have brought calls to non-recursive helpers; clean
+    # those up with one more fixpoint.
+    inlined += _inline_non_recursive(funcs, growth)
     return inlined

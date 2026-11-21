@@ -127,8 +127,67 @@ class OptimizerTests(VelaTestCase):
         result = compile_source(src, "inline_mutual.vl")
         calls = [ins.args[0] for fn in result.program.functions
                  for b in fn.blocks for ins in b.instrs if ins.op == "call"]
-        self.assertIn("fn_even", calls)
-        self.assertIn("fn_odd", calls)
+        # Depth-1 partial inlining may remove one side of the mutual cycle;
+        # at least one recursive call must remain (unbounded expansion is not
+        # allowed) and the program must still be correct.
+        self.assertTrue("fn_even" in calls or "fn_odd" in calls)
+        proc = run_native(src)
+        self.assertEqual(out_text(proc), "True False\n")
+
+
+    def test_full_coverage_large_callee(self):
+        lines = ["def big(x):"]
+        for i in range(70):
+            src = "x" if i == 0 else f"v{i - 1}"
+            lines.append(f"    v{i} = {src} + 1")
+        lines.append("    return v69")
+        lines.append("print(big(1))")
+        source = "\n".join(lines) + "\n"
+        result = compile_source(source, "inline_big.vl")
+        calls = [ins.args[0] for fn in result.program.functions
+                 for b in fn.blocks for ins in b.instrs if ins.op == "call"]
+        self.assertNotIn("fn_big", calls)
+        proc = run_native(source)
+        self.assertEqual(out_text(proc), "71\n")
+
+    def test_full_coverage_all_call_sites(self):
+        src = ("def inc(x):\n    return x + 1\n"
+               "print(inc(1), inc(2), inc(3), inc(4), inc(5))\n")
+        result = compile_source(src, "inline_all_sites.vl")
+        calls = [ins.args[0] for fn in result.program.functions
+                 for b in fn.blocks for ins in b.instrs if ins.op == "call"]
+        self.assertNotIn("fn_inc", calls)
+        proc = run_native(src)
+        self.assertEqual(out_text(proc), "2 3 4 5 6\n")
+
+
+    def test_p3_leaf_frame(self):
+        src = "def add(a, b):\n    return a + b\nprint(add(2, 3))\n"
+        result = compile_source(src, "p3_leaf.vl")
+        self.assertGreaterEqual(result.stats.leaf_functions, 1)
+        proc = run_native(src)
+        self.assertEqual(out_text(proc), "5\n")
+
+
+    def test_p3_large_frame_stack_probe(self):
+        n = 600
+        lines = ["def big(a):"]
+        for i in range(n):
+            lines.append(f"    v{i} = a + {i}")
+
+        def tree(items):
+            if len(items) == 1:
+                return items[0]
+            mid = len(items) // 2
+            return f"({tree(items[:mid])} + {tree(items[mid:])})"
+
+        lines.append("    return " + tree([f"v{i}" for i in range(n)]))
+        lines.append("print(big(1))")
+        source = "\n".join(lines) + "\n"
+        proc = run_native(source, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        expected = n * 1 + sum(range(n))
+        self.assertEqual(out_text(proc), f"{expected}\n")
 
     def test_semantics_unchanged(self):
         src = ("a = 17\nb = 5\nprint(a + b, a - b, a * b, -a // b, a % b)\n"

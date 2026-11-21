@@ -16,7 +16,7 @@ from . import opt
 from .pe import IMAGE_BASE, DataBuilder, build_exe, layout_image
 from .regalloc import allocate
 from .runtime import Runtime, make_imports
-from .x64 import Asm
+from .x64 import Asm, XMM_POOL
 
 
 @dataclass
@@ -27,6 +27,7 @@ class CompileStats:
     vregs: int = 0
     code_bytes: int = 0
     image_bytes: int = 0
+    leaf_functions: int = 0
     seconds: float = 0.0
 
 
@@ -79,6 +80,13 @@ def compile_source(source: str, filename: str = "<input>") -> CompileResult:
 
     stats = CompileStats()
     stats.functions = len(program.functions)
+    for fn in program.functions:
+        alloc = allocs[fn.name]
+        has_calls = any(ins.op in ("call", "print")
+                        for block in fn.blocks for ins in block.instrs)
+        uses_xmm = any(reg in XMM_POOL for reg in alloc.regs.values())
+        if not has_calls and alloc.slot_count == 0 and not uses_xmm:
+            stats.leaf_functions += 1
     stats.blocks = sum(len(fn.blocks) for fn in program.functions)
     stats.instructions = sum(len(b.instrs) for fn in program.functions for b in fn.blocks)
     stats.vregs = sum(fn.vreg_count for fn in program.functions)

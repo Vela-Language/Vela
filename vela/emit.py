@@ -38,6 +38,8 @@ class FuncEmitter:
         self.xmm_save: dict[str, int] = {}
         self.slot_disp: dict[int, int] = {}
         self.frame = 0
+        self.has_calls = any(ins.op in ("call", "print")
+                             for block in fn.blocks for ins in block.instrs)
         self.use_count: dict[VReg, int] = {}
         for block in fn.blocks:
             for ins in block.instrs:
@@ -50,6 +52,16 @@ class FuncEmitter:
     def _layout_frame(self) -> None:
         used_gpr = [r for r in GPR_POOL if r in set(self.alloc.regs.values())]
         used_xmm = [r for r in XMM_POOL if r in set(self.alloc.regs.values())]
+        self.used_gpr = used_gpr
+        self.used_xmm = used_xmm
+        # A function with no calls, no spills and no XMM callee-saves needs no
+        # frame pointer and no shadow space: push/pop the used GPRs directly.
+        self.leaf_fast = (not self.has_calls
+                          and self.alloc.slot_count == 0
+                          and not used_xmm)
+        if self.leaf_fast:
+            self.frame = 0
+            return
         off = 0
         for reg in used_gpr:
             off += 8
@@ -60,7 +72,8 @@ class FuncEmitter:
         for i in range(self.alloc.slot_count):
             off += 8
             self.slot_disp[i] = -off
-        self.frame = align_up(off + 32, 16)
+        shadow = 32 if self.has_calls else 0
+        self.frame = align_up(off + shadow, 16)
 
     def _disp(self, v: VReg) -> int:
         return self.slot_disp[self.alloc.slots[v]]
@@ -113,20 +126,42 @@ class FuncEmitter:
     def _overflow_check(self) -> None:
         ok = self._next_label("ovf")
         self.a.jcc("no", ok)
-        self.a.call(self.rt.OVERFLOW)
+        self.a.jmp(self.rt.OVERFLOW)
         self.a.bind(ok)
 
     # -- function ----------------------------------------------------------
+    def _alloc_stack(self) -> None:
+        """sub rsp, frame; probe every 4 KiB page when the frame is large."""
+        a = self.a
+        if self.frame <= 4096:
+            a.sub_rsp(self.frame)
+            return
+        a.mov_ri("r11", self.frame)
+        loop = self._next_label("probe")
+        a.bind(loop)
+        a.sub_rsp(4096)
+        a.mov_rm("rax", "rsp", 0)       # touch the new page
+        a.sub_ri("r11", 4096)
+        a.cmp_ri("r11", 4096)
+        a.jcc("a", loop)
+        a.sub_rr("rsp", "r11")
+        a.mov_rm("rax", "rsp", 0)
+        a.bind(loop + "_done")
+
     def emit(self) -> None:
         a = self.a
         a.bind(self.fn.name)
-        a.push_r("rbp")
-        a.mov_rr("rbp", "rsp")
-        a.sub_rsp(self.frame)
-        for reg, disp in self.gpr_save.items():
-            a.mov_mr("rbp", disp, reg)
-        for reg, disp in self.xmm_save.items():
-            a.mov_mr_xmm("rbp", disp, reg)
+        if self.leaf_fast:
+            for reg in self.used_gpr:
+                a.push_r(reg)
+        else:
+            a.push_r("rbp")
+            a.mov_rr("rbp", "rsp")
+            self._alloc_stack()
+            for reg, disp in self.gpr_save.items():
+                a.mov_mr("rbp", disp, reg)
+            for reg, disp in self.xmm_save.items():
+                a.mov_mr_xmm("rbp", disp, reg)
         for block in self.fn.blocks:
             a.bind(block.label)
             instrs = block.instrs
@@ -146,13 +181,18 @@ class FuncEmitter:
                 self.emit_instr(ins)
                 i += 1
         a.bind(self.epi)
-        for reg, disp in self.xmm_save.items():
-            a.mov_rm_xmm(reg, "rbp", disp)
-        for reg, disp in self.gpr_save.items():
-            a.mov_rm(reg, "rbp", disp)
-        a.mov_rr("rsp", "rbp")
-        a.pop_r("rbp")
-        a.ret()
+        if self.leaf_fast:
+            for reg in reversed(self.used_gpr):
+                a.pop_r(reg)
+            a.ret()
+        else:
+            for reg, disp in self.xmm_save.items():
+                a.mov_rm_xmm(reg, "rbp", disp)
+            for reg, disp in self.gpr_save.items():
+                a.mov_rm(reg, "rbp", disp)
+            a.mov_rr("rsp", "rbp")
+            a.pop_r("rbp")
+            a.ret()
 
     def emit_instr(self, ins) -> None:
         op = ins.op

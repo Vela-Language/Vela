@@ -310,6 +310,10 @@ class Runtime:
 
     def _emit_fail(self, a: Asm) -> None:
         a.bind(self.FAIL)
+        # Entered via jmp from arbitrary stack alignment: normalize before
+        # building the frame so the WriteFile call below is ABI-correct.
+        a.and_rsp(-16)
+        a.sub_rsp(8)
         a.push_r("rbp")
         a.mov_rr("rbp", "rsp")
         a.sub_rsp(64)
