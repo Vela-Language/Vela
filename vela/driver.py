@@ -11,6 +11,7 @@ from .emit import emit_program
 from .errors import VelaError
 from .ir import Program
 from .lower import Lowerer
+from . import inline
 from . import opt
 from .pe import IMAGE_BASE, DataBuilder, build_exe, layout_image
 from .regalloc import allocate
@@ -49,6 +50,7 @@ def compile_source(source: str, filename: str = "<input>") -> CompileResult:
 
     lowerer = Lowerer(analyzer, rdata, filename)
     program = lowerer.run()
+    inline.optimize(program)
     opt.optimize(program)
 
     asm = Asm()

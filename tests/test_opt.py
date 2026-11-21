@@ -50,6 +50,40 @@ class OptimizerTests(VelaTestCase):
         ops = ir_ops(src)
         self.assertIn("bin", ops)
 
+
+    def test_inline_empty_function(self):
+        src = ("def empty():\n    return 0\n\n"
+               "def f():\n    i = 0\n    while i < 3:\n        empty()\n        i = i + 1\n    return i\n"
+               "print(f())\n")
+        result = compile_source(src, "inline_empty.vl")
+        calls = [ins.args[0] for fn in result.program.functions
+                 for b in fn.blocks for ins in b.instrs if ins.op == "call"]
+        self.assertNotIn("fn_empty", calls)
+        proc = run_native(src)
+        self.assertEqual(out_text(proc), "3\n")
+
+    def test_inline_add_and_param_isolation(self):
+        src = ("def inc(x):\n    x = x + 1\n    return x\n\n"
+               "def add(a, b):\n    return a + b\n\n"
+               "v = 5\nprint(inc(v), add(v, 2), v)\n")
+        result = compile_source(src, "inline_add.vl")
+        calls = [ins.args[0] for fn in result.program.functions
+                 for b in fn.blocks for ins in b.instrs if ins.op == "call"]
+        self.assertNotIn("fn_inc", calls)
+        self.assertNotIn("fn_add", calls)
+        proc = run_native(src)
+        self.assertEqual(out_text(proc), "6 7 5\n")
+
+    def test_recursive_and_looping_not_inlined(self):
+        src = ("def fib(n):\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\n"
+               "def gcd(a, b):\n    while b != 0:\n        t = a % b\n        a = b\n        b = t\n    return a\n"
+               "print(fib(5), gcd(12, 18))\n")
+        result = compile_source(src, "inline_neg.vl")
+        calls = [ins.args[0] for fn in result.program.functions
+                 for b in fn.blocks for ins in b.instrs if ins.op == "call"]
+        self.assertIn("fn_fib", calls)
+        self.assertIn("fn_gcd", calls)
+
     def test_semantics_unchanged(self):
         src = ("a = 17\nb = 5\nprint(a + b, a - b, a * b, -a // b, a % b)\n"
                "print(2 ** 10, 6 & 3, 6 | 3, 6 ^ 3, 1024 >> 3)\n")
