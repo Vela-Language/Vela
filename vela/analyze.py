@@ -1052,6 +1052,9 @@ class Analyzer:
                 tb = ta
             if ta is None or tb is None:
                 return None
+            if self.boxed and (ta == "bigint" or tb == "bigint") \
+                    and ta in (INT, "bigint") and tb in (INT, "bigint"):
+                return "bigint"
             if not (is_numeric(ta) and is_numeric(tb)):
                 raise VelaTypeError(f"{name}() requires numbers, got {ta} and {tb}", node)
             return join(norm_numeric(ta), norm_numeric(tb))

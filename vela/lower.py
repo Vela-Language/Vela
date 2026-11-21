@@ -1505,6 +1505,8 @@ class FuncBuilder:
         if name in ("min", "max"):
             a = self.expr(node.args[0])
             b = self.expr(node.args[1])
+            if a.ty == OBJ or b.ty == OBJ:
+                return self.num_minmax(name == "min", a, b)
             return self.emit_minmax(name == "min", a, b, node)
         if name == "int":
             v = self.expr(node.args[0])
@@ -1557,6 +1559,28 @@ class FuncBuilder:
         dst = self.fn.new_vreg(dst_ty) if ret != NONE else None
         self.cur.add("call", dst, info.label, tuple(args))
         return dst
+
+    def num_minmax(self, want_min: bool, a: VReg, b: VReg) -> VReg:
+        aa = self.as_num(a)
+        bb = self.as_num(b)
+        cv = self.fn.new_vreg(INT, "mm_cmp")
+        self.cur.add("call", cv, "rt_num_cmp", (aa, bb))
+        z = self.const_int(0)
+        cond = self.fn.new_vreg(BOOL)
+        self.cur.add("cmp", cond, "lt" if want_min else "gt", cv, z)
+        pick_a = self.new_block("mm_a")
+        pick_b = self.new_block("mm_b")
+        join = self.new_block("mm_join")
+        out = self.fn.new_vreg(OBJ, "mm_out")
+        self.cur.add("br", None, cond, pick_a.block.label, pick_b.block.label)
+        self.use(pick_a)
+        self.cur.add("mov", out, aa)
+        self.cur.add("jmp", None, join.block.label)
+        self.use(pick_b)
+        self.cur.add("mov", out, bb)
+        self.cur.add("jmp", None, join.block.label)
+        self.use(join)
+        return out
 
     def emit_abs(self, v: VReg) -> VReg:
         if v.ty == FLOAT:
