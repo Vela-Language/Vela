@@ -898,6 +898,17 @@ class BoxedTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
         self.assertIn(b"99999999999999999999", p.stdout)
 
+    def test_boxed_module_object_constants(self):
+        mod = os.path.join(TMPDIR, "modobj.vl")
+        with open(mod, "w", encoding="utf-8") as f:
+            f.write("VALUE = 7\nOTHER = 8\nNAME = \"ok\"\n")
+        src = os.path.join(TMPDIR, "modobj_main.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("import modobj\nprint(modobj.VALUE + modobj.OTHER, modobj.NAME)\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"15 ok", p.stdout)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:

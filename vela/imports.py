@@ -60,6 +60,7 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
     imported: dict[str, str] = {}
     imported_consts: dict[str, object] = {}
     module_names: set[str] = set()
+    module_objs: dict[str, dict[str, int]] = {}
     has_sys = False
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -77,6 +78,15 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
                 funcs, consts = _rewrite_module(sub, qual)
                 body.extend(funcs)
                 modules[alias.name] = ({f.name.rsplit("__", 1)[1] for f in funcs}, consts)
+                ints = [(n, v) for n, v in consts.items()
+                        if isinstance(v, int) and not isinstance(v, bool)]
+                if ints:
+                    module_objs[alias.name] = {n: i for i, (n, _) in enumerate(ints)}
+                    body.append(ast.Assign(
+                        targets=[ast.Name(id=alias.name, ctx=ast.Store())],
+                        value=ast.List(
+                            elts=[ast.Constant(value=v) for _, v in ints],
+                            ctx=ast.Load())))
             continue
         if isinstance(node, ast.ImportFrom):
             if node.module is None:
@@ -131,6 +141,11 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
                 funcs, consts = modules[f.value.id]
                 if f.attr in funcs:
                     node.func = ast.Name(id=f"{f.value.id}__{f.attr}", ctx=ast.Load())
+                elif f.value.id in module_objs and f.attr in module_objs[f.value.id]:
+                    return ast.copy_location(ast.Subscript(
+                        value=ast.Name(id=f.value.id, ctx=ast.Load()),
+                        slice=ast.Constant(value=module_objs[f.value.id][f.attr]),
+                        ctx=ast.Load()), node)
                 elif f.attr in consts:
                     return ast.copy_location(ast.Constant(value=consts[f.attr]), node)
             elif isinstance(f, ast.Name) and f.id in imported:
