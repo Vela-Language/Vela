@@ -873,6 +873,56 @@ def build_gc_child_probe() -> bytes:
                      entry_off=asm.labels["_start"])
 
 
+def build_gc_cycle_probe() -> bytes:
+    fn = Function("fn_gccycle", INT)
+    entry = fn.entry
+    a = fn.new_vreg(OBJ, "a")
+    b = fn.new_vreg(OBJ, "b")
+    live = fn.new_vreg(INT, "live")
+    one = fn.new_vreg(INT, "one")
+    zero = fn.new_vreg(INT, "zero")
+    idx = fn.new_vreg(INT, "idx")
+    cond = fn.new_vreg(BOOL, "cond")
+    ok = fn.new_block("ok")
+    bad = fn.new_block("bad")
+    entry.add("const", one, 1)
+    entry.add("const", zero, 0)
+    entry.add("const", idx, 0)
+    entry.add("call", a, "rt_list_new", (one,))
+    entry.add("call", b, "rt_list_new", (one,))
+    entry.add("call", None, "rt_list_set", (a, idx, b))
+    entry.add("call", None, "rt_list_set", (b, idx, a))
+    entry.add("call", None, "rt_gc_collect_exact", ())
+    entry.add("call", live, "rt_gc_live", ())
+    entry.add("cmp", cond, "eq", live, zero)
+    entry.add("br", None, cond, ok.label, bad.label)
+    ok.add("ret", None, zero)
+    bad.add("ret", None, one)
+
+    program = Program(functions=[fn], main=fn)
+    rdata = DataBuilder()
+    data = DataBuilder()
+    imports = make_imports()
+    runtime = Runtime(imports, rdata, data)
+    asm = Asm()
+    runtime.emit(asm)
+    allocs = {fn.name: allocate(fn)}
+    emit_program(asm, program.functions, allocs, runtime, itertools.count())
+    asm.bind("_start")
+    asm.and_rsp(-16)
+    asm.sub_rsp(32)
+    asm.call(runtime.RT_INIT)
+    asm.call(fn.name)
+    asm.mov_ri("rcx", 0)
+    asm.call_iat(("idata", imports.slot("kernel32.dll", "ExitProcess")))
+    rdata_bytes = bytes(rdata.buf)
+    data_bytes = bytes(data.buf)
+    lay = layout_image(bytes(asm.b), rdata_bytes, data_bytes, imports)
+    asm.resolve(IMAGE_BASE, lay.rvas)
+    return build_exe(bytes(asm.b), rdata_bytes, data_bytes, imports,
+                     entry_off=asm.labels["_start"])
+
+
 class ObjectRuntimeTests(unittest.TestCase):
     def test_obj_type_regalloc(self):
         fn = Function("fn_objarg", OBJ)
@@ -971,6 +1021,14 @@ class ObjectRuntimeTests(unittest.TestCase):
     def test_gc_child_marking(self):
         exe = build_gc_child_probe()
         path = os.path.join(TMPDIR, "gcchild.exe")
+        with open(path, "wb") as f:
+            f.write(exe)
+        proc = subprocess.run([path], capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+
+    def test_gc_cycle_collection(self):
+        exe = build_gc_cycle_probe()
+        path = os.path.join(TMPDIR, "gccycle.exe")
         with open(path, "wb") as f:
             f.write(exe)
         proc = subprocess.run([path], capture_output=True, timeout=30)

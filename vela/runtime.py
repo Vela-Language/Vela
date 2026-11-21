@@ -57,6 +57,7 @@ class Runtime:
     GC_CLEAR = "rt_gc_clear"
     GC_LIVE = "rt_gc_live"
     GC_COLLECT = "rt_gc_collect"
+    GC_COLLECT_EXACT = "rt_gc_collect_exact"
     GC_PUSH = "rt_gc_push_root"
     GC_POP = "rt_gc_pop_root"
     BOX_FLOAT = "rt_box_float"
@@ -248,6 +249,7 @@ class Runtime:
         self.exc_file_off = data.add(b"\x00" * 8, 8)
         self.exc_cause_off = data.add(b"\x00" * 8, 8)
         self.stack_base_off = data.add(b"\x00" * 8, 8)
+        self.gc_exact_off = data.add(b"\x00" * 8, 8)
         self.gc_roots_off = data.add(b"\x00" * (1024 * 8), 8)
         self.gc_root_count_off = data.add(b"\x00" * 8, 8)
         self.msg_root_overflow = rdata.add_str_descriptor(
@@ -3866,6 +3868,11 @@ class Runtime:
 
         # Mark-sweep: unmarked objects are unlinked and freed.  Roots must be
         # marked by the caller before collect; the mark is cleared otherwise.
+        a.bind(self.GC_COLLECT_EXACT)
+        a.mov_abs64("r11", ("data", self.gc_exact_off))
+        a.mov_mi("r11", 0, 1)
+        a.jmp(self.GC_COLLECT)
+
         a.bind(self.GC_COLLECT)
         a.push_r("rbx")
         a.push_r("rsi")
@@ -3889,6 +3896,13 @@ class Runtime:
         a.add_ri("rdx", 1)
         a.jmp("gc_mark_loop")
         a.bind("gc_mark_done")
+        a.mov_abs64("r11", ("data", self.gc_exact_off))
+        a.mov_rm("r8", "r11", 0)
+        a.test_rr("r8", "r8")
+        a.jcc("e", "gc_do_scan")
+        a.mov_mi("r11", 0, 0)
+        a.jmp("gc_scan_done")
+        a.bind("gc_do_scan")
         # Conservative automatic root scan: any stack word equal to a live
         # object pointer is treated as a root.
         a.mov_abs64("r8", ("data", self.stack_base_off))
