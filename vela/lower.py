@@ -1053,6 +1053,8 @@ class FuncBuilder:
                 return self.const_bool(v)
             if isinstance(v, int):
                 if self.dyn:
+                    if not -(2 ** 63) <= v < 2 ** 63:
+                        return self.const_bigint(v)
                     return self.as_num(self.const_int(v))
                 if self.lw.boxed and not -(2 ** 63) <= v < 2 ** 63:
                     d = self.fn.new_vreg(STR, "big_desc")

@@ -92,6 +92,14 @@ class DynamicIntTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
         self.assertIn(b"1 0 4 0", p.stdout)
 
+    def test_large_literal_promotion(self):
+        src = os.path.join(TMPDIR, "dyn_lit_big.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("x = 10000000000000000000\nprint(0 - x, x - x, x + x)\n")
+        p = vela("run", "--boxed-dyn", "--strict", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"-10000000000000000000 0 20000000000000000000", p.stdout)
+
     def test_add_and_compare(self):
         src = os.path.join(TMPDIR, "dyn_add.vl")
         with open(src, "w", encoding="utf-8") as f:

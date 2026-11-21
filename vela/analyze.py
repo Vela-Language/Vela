@@ -871,13 +871,8 @@ class Analyzer:
         if self.boxed and (a == "bigint" or b == "bigint") \
                 and isinstance(op, (ast.Add, ast.Sub, ast.Mult)):
             return "bigint"
-        if self.boxed and a == "bigint" and b in (INT, BOOL) \
-                and isinstance(op, (ast.FloorDiv, ast.Mod)):
-            return "bigint"
-        if self.boxed and a == "bigint" and b == "bigint" \
-                and isinstance(op, (ast.FloorDiv, ast.Mod)):
-            return "bigint"
-        if self.boxed and a == "bigint" and b == "bigint" \
+        if self.boxed and (a == "bigint" or b == "bigint") \
+                and a in (INT, BOOL, "bigint") and b in (INT, BOOL, "bigint") \
                 and isinstance(op, (ast.FloorDiv, ast.Mod)):
             return "bigint"
         if a is None and b is None:
