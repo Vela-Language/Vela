@@ -10,7 +10,7 @@ import ast
 
 from .analyze import Analyzer, FuncInfo, is_numeric, norm_numeric
 from .errors import UnsupportedError, VelaCompileError, VelaTypeError
-from .ir import (BOOL, FLOAT, GPR_TYPES, INT, NONE, Program, STR, UNKNOWN,
+from .ir import (BOOL, FLOAT, GPR_TYPES, INT, NONE, OBJ, Program, STR, UNKNOWN,
                  Function, VReg)
 from .pe import DataBuilder
 
@@ -19,10 +19,13 @@ PY_NONE = None
 
 class Lowerer:
     def __init__(self, analyzer: Analyzer, rdata: DataBuilder,
-                 filename: str = "<input>") -> None:
+                 filename: str = "<input>", boxed: bool = False) -> None:
         self.an = analyzer
         self.rdata = rdata
         self.filename = filename
+        self.boxed = boxed
+        self.mutable_globals = set(getattr(analyzer, "mutable_globals", set()))
+        self.global_slots = {name: i for i, name in enumerate(sorted(self.mutable_globals))}
         self.strings: dict[str, int] = {}
 
     # -- public ------------------------------------------------------------
@@ -35,14 +38,30 @@ class Lowerer:
         return prog
 
     def lower_function(self, info: FuncInfo) -> Function:
-        fn = Function(info.label, info.ret_type or NONE)
+        native_ret = info.ret_type or NONE
+        boxed_ret = self.boxed and native_ret in (INT, FLOAT, BOOL, STR)
+        fn = Function(info.label, OBJ if boxed_ret else native_ret)
         b = FuncBuilder(self, fn, info.name, info.var_types, info.ret_type or NONE)
+        b.globals = set(info.globals)
         for i, (pname, pty) in enumerate(zip(info.params, info.param_types)):
-            v = fn.new_vreg(pty, pname)
+            if self.boxed and pty in (INT, FLOAT, BOOL, STR):
+                v = fn.new_vreg(OBJ, pname + "_obj")
+                fn.params.append(v)
+                fn.entry.add("arg", v, i)
+            else:
+                v = fn.new_vreg(pty, pname)
+                fn.params.append(v)
+                fn.entry.add("arg", v, i)
             b.locals[pname] = v
             b.assigned.add(pname)
-            fn.params.append(v)
-            fn.entry.add("arg", v, i)
+        if self.boxed:
+            zero = fn.new_vreg(INT, "zero_slot")
+            fn.entry.add("const", zero, 0)
+            for name, ty in info.var_types.items():
+                if ty in (INT, FLOAT, BOOL, STR) and name not in b.locals:
+                    slot = fn.new_vreg(OBJ, name + "_obj")
+                    fn.entry.add("mov", slot, zero)
+                    b.locals[name] = slot
         for stmt in info.node.body:
             b.stmt(stmt)
         b.finish()
@@ -51,6 +70,7 @@ class Lowerer:
     def lower_main(self) -> Function:
         fn = Function("fn___vela_main__", NONE)
         b = FuncBuilder(self, fn, "__main__", self.an.main_vars, NONE)
+        b.globals = set(self.mutable_globals)
         for stmt in self.an.tree.body:
             if isinstance(stmt, ast.FunctionDef):
                 continue
@@ -74,6 +94,8 @@ class FuncBuilder:
         self.name = name
         self.var_types = dict(var_types)
         self.ret_ty = ret_ty
+        self.globals: set[str] = set()
+        self.finally_stack: list[list[ast.stmt]] = []
         self.cur = fn.entry
         self.locals: dict[str, VReg] = {}
         self.assigned: set[str] = set()
@@ -122,17 +144,145 @@ class FuncBuilder:
             return r
         raise VelaTypeError(f"cannot convert {v.ty} to {want}")
 
+    def dict_to_list(self, obj: VReg, values: bool) -> VReg:
+        dst = self.call_rt("rt_list_new", [self.const_int(0)], OBJ)
+        length = self.fn.new_vreg(INT, "dict_len")
+        self.cur.add("call", length, "rt_dict_len", (obj,))
+        idx = self.fn.new_vreg(INT, "dict_i")
+        self.cur.add("mov", idx, self.const_int(0))
+        cond = self.new_block("dl_cond")
+        body = self.new_block("dl_body")
+        exit_b = self.new_block("dl_exit")
+        self.cur.add("jmp", None, cond.block.label)
+        self.use(cond)
+        c = self.fn.new_vreg(BOOL)
+        self.cur.add("cmp", c, "lt", idx, length)
+        self.cur.add("br", None, c, body.block.label, exit_b.block.label)
+        self.use(body)
+        label = "rt_dict_val_at" if values else "rt_dict_key_at"
+        elem = self.call_rt(label, [obj, idx], OBJ)
+        self.cur.add("call", None, "rt_list_append", (dst, elem))
+        one = self.const_int(1)
+        ni = self.fn.new_vreg(INT)
+        self.cur.add("bin", ni, "add", idx, one)
+        self.cur.add("mov", idx, ni)
+        self.cur.add("jmp", None, cond.block.label)
+        self.use(exit_b)
+        return dst
+
+    def set_merge(self, dst: VReg, src: VReg, filter_src: VReg | None) -> None:
+        length = self.fn.new_vreg(INT, "set_len")
+        self.cur.add("call", length, "rt_list_len", (src,))
+        idx = self.fn.new_vreg(INT, "set_i")
+        self.cur.add("mov", idx, self.const_int(0))
+        cond = self.new_block("set_cond")
+        body = self.new_block("set_body")
+        addb = self.new_block("set_add")
+        nxt = self.new_block("set_next")
+        exit_b = self.new_block("set_exit")
+        self.cur.add("jmp", None, cond.block.label)
+        self.use(cond)
+        c = self.fn.new_vreg(BOOL)
+        self.cur.add("cmp", c, "lt", idx, length)
+        self.cur.add("br", None, c, body.block.label, exit_b.block.label)
+        self.use(body)
+        elem = self.call_rt("rt_list_get", [src, idx], OBJ)
+        if filter_src is not None:
+            inc = self.call_rt("rt_contains", [filter_src, elem], BOOL)
+            self.cur.add("br", None, inc, addb.block.label, nxt.block.label)
+            self.use(addb)
+        self.cur.add("call", None, "rt_set_add", (dst, elem))
+        self.cur.add("jmp", None, nxt.block.label)
+        self.use(nxt)
+        one = self.const_int(1)
+        ni = self.fn.new_vreg(INT)
+        self.cur.add("bin", ni, "add", idx, one)
+        self.cur.add("mov", idx, ni)
+        self.cur.add("jmp", None, cond.block.label)
+        self.use(exit_b)
+
+    def box_scalar(self, v: VReg) -> VReg:
+        o = self.fn.new_vreg(OBJ, "boxed")
+        label = {INT: "rt_box_int", FLOAT: "rt_box_float",
+                 BOOL: "rt_box_bool", STR: "rt_box_str"}[v.ty]
+        self.cur.add("call", o, label, (v,))
+        return o
+
     def var(self, name: str, node: ast.AST) -> VReg:
+        if name in self.globals:
+            ty = self.var_types.get(name)
+            if ty is None:
+                ty = self.lw.an.const_globals.get(name, (INT, 0))[0]
+            idx = self.const_int(self.lw.global_slots[name])
+            obj = self.fn.new_vreg(OBJ, name + "_g")
+            self.cur.add("call", obj, "rt_global_get", (idx,))
+            r = self.fn.new_vreg(ty, name + "_v")
+            unbox = {INT: "rt_unbox_int", FLOAT: "rt_unbox_float",
+                     BOOL: "rt_unbox_bool", STR: "rt_unbox_str"}[ty]
+            self.cur.add("call", r, unbox, (obj,))
+            return r
         v = self.locals.get(name)
         if v is None or name not in self.assigned:
             raise VelaCompileError(
                 f"local variable '{name}' is used before assignment", node)
+        declared = self.var_types.get(name)
+        if self.lw.boxed and declared in ("list", "dict", "tuple", "set") and v.ty == OBJ:
+            return v
+        if self.lw.boxed and v.ty == OBJ and declared in (INT, FLOAT, BOOL, STR):
+            r = self.fn.new_vreg(declared, name + "_v")
+            unbox = {INT: "rt_unbox_int", FLOAT: "rt_unbox_float",
+                     BOOL: "rt_unbox_bool", STR: "rt_unbox_str"}[declared]
+            self.cur.add("call", r, unbox, (v,))
+            return r
         return v
 
     def bind(self, name: str, value: VReg | None, node: ast.AST) -> None:
+        if name in self.globals:
+            declared = self.var_types.get(name)
+            if declared is None:
+                declared = self.lw.an.const_globals.get(name, (INT, 0))[0]
+            if value is None:
+                raise VelaTypeError(f"cannot assign None to global '{name}'", node)
+            native = self.coerce(value, declared)
+            boxed = self.fn.new_vreg(OBJ, name + "_gb")
+            label = {INT: "rt_box_int", FLOAT: "rt_box_float",
+                     BOOL: "rt_box_bool", STR: "rt_box_str"}[declared]
+            self.cur.add("call", boxed, label, (native,))
+            idx = self.const_int(self.lw.global_slots[name])
+            self.cur.add("call", None, "rt_global_set", (idx, boxed))
+            self.assigned.add(name)
+            return
         declared = self.var_types.get(name)
         if declared is None:
             declared = value.ty if value is not None else NONE
+        if self.lw.boxed and declared in ("list", "dict", "tuple", "set"):
+            v = self.locals.get(name)
+            if v is None or v.ty != OBJ:
+                v = self.fn.new_vreg(OBJ, name + "_list")
+                self.locals[name] = v
+            if value is None:
+                raise VelaTypeError(f"cannot assign None to list '{name}'", node)
+            self.cur.add("mov", v, value)
+            self.assigned.add(name)
+            return
+        if self.lw.boxed and declared in (INT, FLOAT, BOOL, STR):
+            v = self.locals.get(name)
+            if v is None or v.ty != OBJ:
+                v = self.fn.new_vreg(OBJ, name + "_obj")
+                self.locals[name] = v
+            if value is None:
+                raise VelaTypeError(
+                    f"cannot assign None to variable '{name}' of type {declared}", node)
+            native = self.coerce(value, declared)
+            if name in self.assigned:
+                self.cur.add("call", None, "rt_decref", (v,))
+            boxed = self.fn.new_vreg(OBJ, name + "_box")
+            label = {INT: "rt_box_int", FLOAT: "rt_box_float",
+                     BOOL: "rt_box_bool", STR: "rt_box_str"}[declared]
+            self.cur.add("call", boxed, label, (native,))
+            self.cur.add("mov", v, boxed)
+            self.assigned.add(name)
+            return
         v = self.locals.get(name)
         if v is None:
             v = self.fn.new_vreg(declared, name)
@@ -148,6 +298,13 @@ class FuncBuilder:
             self.cur.add("mov", v, value)
         self.assigned.add(name)
 
+    def boxed_cleanup(self) -> None:
+        if not self.lw.boxed:
+            return
+        for name, v in list(self.locals.items()):
+            if v.ty == OBJ and name in self.assigned:
+                self.cur.add("call", None, "rt_decref", (v,))
+
     def finish(self) -> None:
         # Only the block that is still "open" at the end of lowering is a real
         # fall-through continuation; terminate it with `ret`.  Other blocks
@@ -157,10 +314,16 @@ class FuncBuilder:
             if block.terminator is not None:
                 continue
             if block is self.cur:
+                self.boxed_cleanup()
                 if self.ret_ty != NONE:
-                    raise VelaTypeError(
-                        f"{self.name}() may fall off the end without returning a value")
-                block.add("ret", None, None)
+                    # The analyzer already proved every reachable path returns;
+                    # this continuation is unreachable, but the IR still needs a
+                    # well-formed terminator.
+                    zero = self.fn.new_vreg(self.ret_ty, "unreachable_ret")
+                    block.add("const", zero, 0)
+                    block.add("ret", None, zero)
+                else:
+                    block.add("ret", None, None)
             elif i + 1 < len(self.fn.blocks):
                 block.add("jmp", None, self.fn.blocks[i + 1].label)
             else:
@@ -171,8 +334,32 @@ class FuncBuilder:
         if self.cur.terminator is not None:
             self.cur = self.fn.new_block("unreachable")
         if isinstance(node, ast.Assign):
+            target = node.targets[0]
+            if isinstance(target, ast.Tuple):
+                obj = self.expr(node.value)
+                for i, elt in enumerate(target.elts):
+                    idx = self.const_int(i)
+                    elem = self.call_rt("rt_list_get", [obj, idx], OBJ)
+                    native = self.fn.new_vreg(INT)
+                    self.cur.add("call", native, "rt_unbox_int", (elem,))
+                    self.bind(elt.id, native, node)
+                return
+            if isinstance(target, ast.Subscript):
+                obj = self.expr(target.value)
+                if getattr(target.value, "_vela_ty", None) == "dict":
+                    keyo = self.box_scalar(self.expr(target.slice))
+                    native = self.coerce(self.expr(node.value), INT)
+                    boxed = self.box_scalar(native)
+                    self.cur.add("call", None, "rt_dict_set", (obj, keyo, boxed))
+                else:
+                    key = self.coerce(self.expr(target.slice), INT)
+                    native = self.coerce(self.expr(node.value), INT)
+                    boxed = self.fn.new_vreg(OBJ, "boxed_set")
+                    self.cur.add("call", boxed, "rt_box_int", (native,))
+                    self.cur.add("call", None, "rt_list_set", (obj, key, boxed))
+                return
             value = self.expr(node.value)
-            self.bind(node.targets[0].id, value, node)
+            self.bind(target.id, value, node)
             return
         if isinstance(node, ast.AnnAssign):
             self.bind(node.target.id, self.expr(node.value), node)
@@ -191,6 +378,28 @@ class FuncBuilder:
         if isinstance(node, ast.While):
             self.while_stmt(node)
             return
+        if isinstance(node, (ast.Global, ast.FunctionDef)):
+            return
+        if isinstance(node, ast.Assert):
+            test = self.coerce(self.expr(node.test), BOOL)
+            ok = self.new_block("assert_ok")
+            bad = self.new_block("assert_bad")
+            self.cur.add("br", None, test, ok.block.label, bad.block.label)
+            self.use(bad)
+            d = self.fn.new_vreg(STR, "assert_msg")
+            self.cur.add("str", d, self.lw.string_offset("assertion failed"))
+            code = self.const_int(1)
+            self.cur.add("call", None, "rt_raise", (code, d))
+            dead = self.new_block("after_assert")
+            self.cur.add("jmp", None, dead.block.label)
+            self.use(ok)
+            return
+        if isinstance(node, ast.Try):
+            self.try_stmt(node)
+            return
+        if isinstance(node, ast.Raise):
+            self.raise_stmt(node)
+            return
         if isinstance(node, ast.For):
             self.for_stmt(node)
             return
@@ -199,10 +408,23 @@ class FuncBuilder:
                 if self.ret_ty != NONE:
                     raise VelaTypeError(
                         f"{self.name}() must return a value of type {self.ret_ty}")
+                self.emit_finally()
+                self.boxed_cleanup()
                 self.cur.add("ret", None, None)
             else:
                 v = self.coerce(self.expr(node.value), self.ret_ty)
-                self.cur.add("ret", None, v)
+                if self.lw.boxed and v.ty in (INT, FLOAT, BOOL, STR):
+                    o = self.fn.new_vreg(OBJ, "boxed_ret")
+                    label = {INT: "rt_box_int", FLOAT: "rt_box_float",
+                             BOOL: "rt_box_bool", STR: "rt_box_str"}[v.ty]
+                    self.emit_finally()
+                    self.cur.add("call", o, label, (v,))
+                    self.boxed_cleanup()
+                    self.cur.add("ret", None, o)
+                else:
+                    self.emit_finally()
+                    self.boxed_cleanup()
+                    self.cur.add("ret", None, v)
             return
         if isinstance(node, ast.Pass):
             return
@@ -277,6 +499,64 @@ class FuncBuilder:
         self.assigned = then_assigned & else_assigned
         self.use(join_b)
 
+    def for_list(self, node: ast.For) -> None:
+        obj = self.expr(node.iter)
+        length = self.fn.new_vreg(INT, "list_len")
+        self.cur.add("call", length, "rt_list_len", (obj,))
+        idx = self.fn.new_vreg(INT, "list_i")
+        zero = self.const_int(0)
+        self.cur.add("mov", idx, zero)
+        cond = self.new_block("for_list_cond")
+        body = self.new_block("for_list_body")
+        exit_b = self.new_block("for_list_exit")
+        self.cur.add("jmp", None, cond.block.label)
+        self.use(cond)
+        c = self.fn.new_vreg(BOOL)
+        self.cur.add("cmp", c, "lt", idx, length)
+        self.cur.add("br", None, c, body.block.label, exit_b.block.label)
+        self.use(body)
+        elem = self.call_rt("rt_list_get", [obj, idx], OBJ)
+        native = self.fn.new_vreg(INT)
+        self.cur.add("call", native, "rt_unbox_int", (elem,))
+        self.bind(node.target.id, native, node)
+        for stmt in node.body:
+            self.stmt(stmt)
+        one = self.const_int(1)
+        nxt = self.fn.new_vreg(INT)
+        self.cur.add("bin", nxt, "add", idx, one)
+        self.cur.add("mov", idx, nxt)
+        self.cur.add("jmp", None, cond.block.label)
+        self.use(exit_b)
+
+    def for_dict(self, node: ast.For) -> None:
+        obj = self.expr(node.iter)
+        length = self.fn.new_vreg(INT, "dict_len")
+        self.cur.add("call", length, "rt_dict_len", (obj,))
+        idx = self.fn.new_vreg(INT, "dict_i")
+        zero = self.const_int(0)
+        self.cur.add("mov", idx, zero)
+        cond = self.new_block("for_dict_cond")
+        body = self.new_block("for_dict_body")
+        exit_b = self.new_block("for_dict_exit")
+        self.cur.add("jmp", None, cond.block.label)
+        self.use(cond)
+        c = self.fn.new_vreg(BOOL)
+        self.cur.add("cmp", c, "lt", idx, length)
+        self.cur.add("br", None, c, body.block.label, exit_b.block.label)
+        self.use(body)
+        keyo = self.call_rt("rt_dict_key_at", [obj, idx], OBJ)
+        native = self.fn.new_vreg(INT)
+        self.cur.add("call", native, "rt_unbox_int", (keyo,))
+        self.bind(node.target.id, native, node)
+        for stmt in node.body:
+            self.stmt(stmt)
+        one = self.const_int(1)
+        nxt = self.fn.new_vreg(INT)
+        self.cur.add("bin", nxt, "add", idx, one)
+        self.cur.add("mov", idx, nxt)
+        self.cur.add("jmp", None, cond.block.label)
+        self.use(exit_b)
+
     def while_stmt(self, node: ast.While) -> None:
         if node.orelse:
             raise UnsupportedError("while/else", node)
@@ -298,9 +578,92 @@ class FuncBuilder:
         self.assigned = saved
         self.use(exit_b)
 
+    def try_stmt(self, node: ast.Try) -> None:
+        n = len(node.handlers)
+        body = self.new_block("try_body")
+        dispatch = [self.new_block(f"try_dispatch_{i}") for i in range(n + 1)]
+        hblocks = [self.new_block(f"try_except_{i}") for i in range(n)]
+        done = self.new_block("try_done")
+        addr = self.fn.new_vreg(INT, "handler_addr")
+        self.cur.add("addr", addr, dispatch[0].block.label)
+        self.cur.add("call", None, "rt_try_push", (addr,))
+        self.cur.add("jmp", None, body.block.label)
+        self.use(body)
+        self.finally_stack.append(list(node.finalbody))
+        for stmt in node.body:
+            self.stmt(stmt)
+        self.finally_stack.pop()
+        self.cur.add("call", None, "rt_try_pop", ())
+        for stmt in node.orelse:
+            self.stmt(stmt)
+        for stmt in node.finalbody:
+            self.stmt(stmt)
+        self.cur.add("jmp", None, done.block.label)
+        types = {"ValueError": 1, "TypeError": 2, "Exception": 0,
+                 "BaseException": 0}
+        for i, h in enumerate(node.handlers):
+            self.use(dispatch[i])
+            if h.type is None:
+                self.cur.add("jmp", None, hblocks[i].block.label)
+            else:
+                expected = types.get(getattr(h.type, "id", ""), 1)
+                if expected == 0:
+                    self.cur.add("jmp", None, hblocks[i].block.label)
+                else:
+                    code = self.call_rt("rt_exc_code", [], INT)
+                    want = self.const_int(expected)
+                    cond = self.fn.new_vreg(BOOL)
+                    self.cur.add("cmp", cond, "eq", code, want)
+                    self.cur.add("br", None, cond, hblocks[i].block.label,
+                                 dispatch[i + 1].block.label)
+        self.use(dispatch[n])
+        self.cur.add("call", None, "rt_reraise", ())
+        self.cur.add("jmp", None, done.block.label)
+        for i, h in enumerate(node.handlers):
+            self.use(hblocks[i])
+            if h.name:
+                self.var_types[h.name] = STR
+                desc = self.call_rt("rt_exc_desc", [], STR)
+                self.bind(h.name, desc, node)
+            self.finally_stack.append(list(node.finalbody))
+            for stmt in h.body:
+                self.stmt(stmt)
+            self.finally_stack.pop()
+            for stmt in node.finalbody:
+                self.stmt(stmt)
+            if self.cur.terminator is None:
+                self.cur.add("jmp", None, done.block.label)
+        self.use(done)
+
+    def emit_finally(self) -> None:
+        for block in reversed(self.finally_stack):
+            for stmt in block:
+                self.stmt(stmt)
+
+    def raise_stmt(self, node: ast.Raise) -> None:
+        desc = self.const_int(0)
+        code_val = 1
+        if node.exc is not None:
+            desc = self.expr(node.exc.args[0])
+            code_val = {"ValueError": 1, "TypeError": 2}.get(node.exc.func.id, 1)
+        code = self.const_int(code_val)
+        self.cur.add("call", None, "rt_raise", (code, desc))
+        dead = self.new_block("after_raise")
+        self.cur.add("jmp", None, dead.block.label)
+        self.use(dead)
+
     def for_stmt(self, node: ast.For) -> None:
         if node.orelse:
             raise UnsupportedError("for/else", node)
+        iter_ty = getattr(node.iter, "_vela_ty", None)
+        if self.lw.boxed and (
+                isinstance(node.iter, (ast.List, ast.Tuple, ast.Set))
+                or iter_ty in ("list", "tuple", "set", "dict")):
+            if iter_ty == "dict":
+                self.for_dict(node)
+            else:
+                self.for_list(node)
+            return
         args = node.iter.args
         one = len(args) == 1
         start_node = None if one else args[0]
@@ -407,7 +770,90 @@ class FuncBuilder:
                 return r
             raise UnsupportedError(f"constant of type {type(v).__name__}", node)
         if isinstance(node, ast.Name):
+            if node.id not in self.locals and node.id not in self.globals \
+                    and node.id in self.lw.an.const_globals:
+                ty, val = self.lw.an.const_globals[node.id]
+                v = self.fn.new_vreg(ty, node.id)
+                if ty == STR:
+                    self.cur.add("str", v, self.lw.string_offset(val))
+                elif ty == NONE:
+                    self.cur.add("const", v, 0)
+                elif ty == BOOL:
+                    self.cur.add("const", v, 1 if val else 0)
+                else:
+                    self.cur.add("const", v, val)
+                return v
             return self.var(node.id, node)
+        if isinstance(node, ast.Dict):
+            obj = self.call_rt("rt_dict_new", [], OBJ)
+            for k, v in zip(node.keys, node.values):
+                if isinstance(k.value, str):
+                    ko = self.box_scalar(self.expr(k))
+                else:
+                    ko = self.box_scalar(self.const_int(k.value))
+                vo = self.fn.new_vreg(OBJ, "dict_val")
+                vn = self.const_int(v.value)
+                self.cur.add("call", vo, "rt_box_int", (vn,))
+                self.cur.add("call", None, "rt_dict_set", (obj, ko, vo))
+            return obj
+        if isinstance(node, ast.Set):
+            n = self.const_int(len(node.elts))
+            obj = self.call_rt("rt_list_new", [n], OBJ)
+            for i, item in enumerate(node.elts):
+                native = self.expr(item)
+                boxed = self.fn.new_vreg(OBJ, "set_elem")
+                self.cur.add("call", boxed, "rt_box_int", (native,))
+                idx = self.const_int(i)
+                self.cur.add("call", None, "rt_list_set", (obj, idx, boxed))
+            self.cur.add("call", None, "rt_set_type", (obj,))
+            return obj
+        if isinstance(node, ast.Tuple):
+            n = self.const_int(len(node.elts))
+            obj = self.call_rt("rt_list_new", [n], OBJ)
+            for i, item in enumerate(node.elts):
+                native = self.expr(item)
+                boxed = self.fn.new_vreg(OBJ, "tuple_elem")
+                self.cur.add("call", boxed, "rt_box_int", (native,))
+                idx = self.const_int(i)
+                self.cur.add("call", None, "rt_list_set", (obj, idx, boxed))
+            self.cur.add("call", None, "rt_tuple_type", (obj,))
+            return obj
+        if isinstance(node, ast.List):
+            n = self.const_int(len(node.elts))
+            obj = self.call_rt("rt_list_new", [n], OBJ)
+            for i, item in enumerate(node.elts):
+                native = self.expr(item)
+                boxed = self.fn.new_vreg(OBJ, "list_elem")
+                self.cur.add("call", boxed, "rt_box_int", (native,))
+                idx = self.const_int(i)
+                self.cur.add("call", None, "rt_list_set", (obj, idx, boxed))
+            return obj
+        if isinstance(node, ast.Subscript) and (
+                isinstance(node.value, ast.List)
+                or getattr(node.value, "_vela_ty", None) in ("list", "tuple")):
+            obj = self.expr(node.value)
+            idx = self.expr(node.slice)
+            elem = self.call_rt("rt_list_get", [obj, idx], OBJ)
+            native = self.fn.new_vreg(INT)
+            self.cur.add("call", native, "rt_unbox_int", (elem,))
+            return native
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice) \
+                and getattr(node.value, "_vela_ty", None) == "str":
+            desc = self.expr(node.value)
+            start = self.coerce(self.expr(node.slice.lower), INT) if node.slice.lower else self.const_int(0)
+            stop = self.coerce(self.expr(node.slice.upper), INT) if node.slice.upper else self.call_rt("rt_str_len", [desc], INT)
+            return self.call_rt("rt_str_slice", [desc, start, stop], STR)
+        if isinstance(node, ast.Subscript) and getattr(node.value, "_vela_ty", None) == "str":
+            desc = self.expr(node.value)
+            idx = self.coerce(self.expr(node.slice), INT)
+            return self.call_rt("rt_str_index", [desc, idx], STR)
+        if isinstance(node, ast.Subscript) and getattr(node.value, "_vela_ty", None) == "dict":
+            obj = self.expr(node.value)
+            keyo = self.box_scalar(self.expr(node.slice))
+            val = self.call_rt("rt_dict_get", [obj, keyo], OBJ)
+            native = self.fn.new_vreg(INT)
+            self.cur.add("call", native, "rt_unbox_int", (val,))
+            return native
         if isinstance(node, ast.BinOp):
             return self.binop(node)
         if isinstance(node, ast.UnaryOp):
@@ -448,6 +894,26 @@ class FuncBuilder:
     def binop(self, node: ast.BinOp) -> VReg:
         left = self.expr(node.left)
         right = self.expr(node.right)
+        if self.lw.boxed and isinstance(node.op, (ast.BitOr, ast.BitAnd)) \
+                and getattr(node.left, "_vela_ty", None) == "set" \
+                and getattr(node.right, "_vela_ty", None) == "set":
+            dst = self.call_rt("rt_list_new", [self.const_int(0)], OBJ)
+            self.cur.add("call", None, "rt_set_type", (dst,))
+            self.set_merge(dst, left, right if isinstance(node.op, ast.BitAnd) else None)
+            if isinstance(node.op, ast.BitOr):
+                self.set_merge(dst, right, None)
+            return dst
+        if self.lw.boxed and left.ty == STR and right.ty == STR:
+            if isinstance(node.op, ast.Add):
+                return self.call_rt("rt_str_concat", [left, right], STR)
+            if isinstance(node.op, (ast.Eq, ast.NotEq)):
+                eq = self.call_rt("rt_str_eq", [left, right], BOOL)
+                if isinstance(node.op, ast.Eq):
+                    return eq
+                z = self.const_int(0)
+                inv = self.fn.new_vreg(BOOL)
+                self.cur.add("cmp", inv, "eq", eq, z)
+                return inv
         ty = self.ty(node)
         op = node.op
         if isinstance(op, ast.Div):
@@ -563,6 +1029,17 @@ class FuncBuilder:
         return result
 
     def compare(self, node: ast.Compare) -> VReg:
+        if len(node.ops) == 1 and isinstance(node.ops[0], (ast.In, ast.NotIn)):
+            right = self.expr(node.comparators[0])
+            vo = self.box_scalar(self.expr(node.left))
+            label = "rt_dict_contains" if getattr(node.comparators[0], "_vela_ty", None) == "dict" else "rt_contains"
+            res = self.call_rt(label, [right, vo], BOOL)
+            if isinstance(node.ops[0], ast.In):
+                return res
+            z = self.const_int(0)
+            inv = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", inv, "eq", res, z)
+            return inv
         if len(node.ops) == 1:
             left = self.expr(node.left)
             right = self.expr(node.comparators[0])
@@ -592,6 +1069,14 @@ class FuncBuilder:
                   node: ast.AST) -> VReg:
         if left is None or right is None:
             raise UnsupportedError("comparison with None", node)
+        if left.ty == STR and right.ty == STR and isinstance(op, (ast.Eq, ast.NotEq)):
+            res = self.call_rt("rt_str_eq", [left, right], BOOL)
+            if isinstance(op, ast.Eq):
+                return res
+            z = self.const_int(0)
+            inv = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", inv, "eq", res, z)
+            return inv
         if left.ty == FLOAT or right.ty == FLOAT:
             a = self.coerce(left, FLOAT)
             b = self.coerce(right, FLOAT)
@@ -644,6 +1129,83 @@ class FuncBuilder:
         return dst  # type: ignore[return-value]
 
     def call(self, node: ast.Call) -> VReg | None:
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "endswith" \
+                and self.lw.boxed:
+            desc = self.expr(node.func.value)
+            suff = self.expr(node.args[0])
+            return self.call_rt("rt_str_ends", [desc, suff], BOOL)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "find" \
+                and self.lw.boxed:
+            desc = self.expr(node.func.value)
+            sub = self.expr(node.args[0])
+            return self.call_rt("rt_str_find", [desc, sub], INT)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "startswith" \
+                and self.lw.boxed:
+            desc = self.expr(node.func.value)
+            pref = self.expr(node.args[0])
+            return self.call_rt("rt_str_starts", [desc, pref], BOOL)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "lower" \
+                and self.lw.boxed:
+            desc = self.expr(node.func.value)
+            return self.call_rt("rt_str_lower", [desc], STR)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "upper" \
+                and self.lw.boxed:
+            desc = self.expr(node.func.value)
+            return self.call_rt("rt_str_upper", [desc], STR)
+        if isinstance(node.func, ast.Attribute) and node.func.attr in ("keys", "values") \
+                and self.lw.boxed:
+            obj = self.expr(node.func.value)
+            return self.dict_to_list(obj, node.func.attr == "values")
+        if isinstance(node.func, ast.Attribute) and node.func.attr in ("count", "index") \
+                and self.lw.boxed:
+            obj = self.expr(node.func.value)
+            vo = self.box_scalar(self.coerce(self.expr(node.args[0]), INT))
+            label = "rt_list_count" if node.func.attr == "count" else "rt_list_index"
+            return self.call_rt(label, [obj, vo], INT)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "extend" \
+                and self.lw.boxed:
+            dst = self.expr(node.func.value)
+            src = self.expr(node.args[0])
+            self.cur.add("call", None, "rt_list_extend", (dst, src))
+            return None
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "pop" \
+                and self.lw.boxed:
+            obj = self.expr(node.func.value)
+            if node.args:
+                idx = self.coerce(self.expr(node.args[0]), INT)
+                val = self.call_rt("rt_list_pop_at", [obj, idx], OBJ)
+            else:
+                val = self.call_rt("rt_list_pop", [obj], OBJ)
+            native = self.fn.new_vreg(INT)
+            self.cur.add("call", native, "rt_unbox_int", (val,))
+            return native
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "add" \
+                and self.lw.boxed:
+            obj = self.expr(node.func.value)
+            native = self.coerce(self.expr(node.args[0]), INT)
+            boxed = self.fn.new_vreg(OBJ, "set_val")
+            self.cur.add("call", boxed, "rt_box_int", (native,))
+            self.cur.add("call", None, "rt_set_add", (obj, boxed))
+            return None
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
+                and self.lw.boxed:
+            obj = self.expr(node.func.value)
+            ko = self.box_scalar(self.expr(node.args[0]))
+            dflt = self.coerce(self.expr(node.args[1]), INT)
+            do = self.fn.new_vreg(OBJ, "get_def")
+            self.cur.add("call", do, "rt_box_int", (dflt,))
+            val = self.call_rt("rt_dict_get_def", [obj, ko, do], OBJ)
+            native = self.fn.new_vreg(INT)
+            self.cur.add("call", native, "rt_unbox_int", (val,))
+            return native
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "append" \
+                and self.lw.boxed:
+            obj = self.expr(node.func.value)
+            native = self.coerce(self.expr(node.args[0]), INT)
+            boxed = self.fn.new_vreg(OBJ, "append_val")
+            self.cur.add("call", boxed, "rt_box_int", (native,))
+            self.cur.add("call", None, "rt_list_append", (obj, boxed))
+            return None
         name = node.func.id
         if name == "print":
             self.emit_print(node)
@@ -651,7 +1213,13 @@ class FuncBuilder:
         if name == "len":
             v = self.expr(node.args[0])
             r = self.fn.new_vreg(INT)
-            self.cur.add("un", r, "strlen", v)
+            t = getattr(node.args[0], "_vela_ty", None)
+            if self.lw.boxed and t == "dict":
+                self.cur.add("call", r, "rt_dict_len", (v,))
+            elif self.lw.boxed and t in ("list", "tuple", "set"):
+                self.cur.add("call", r, "rt_list_len", (v,))
+            else:
+                self.cur.add("un", r, "strlen", v)
             return r
         if name == "abs":
             v = self.expr(node.args[0])
@@ -685,8 +1253,24 @@ class FuncBuilder:
         args: list[VReg | None] = []
         for i, a in enumerate(node.args):
             v = self.expr(a)
-            args.append(self.coerce(v, info.param_types[i]))
+            v = self.coerce(v, info.param_types[i])
+            if self.lw.boxed and v.ty in (INT, FLOAT, BOOL, STR):
+                boxed = self.fn.new_vreg(OBJ, "boxed_arg")
+                label = {INT: "rt_box_int", FLOAT: "rt_box_float",
+                         BOOL: "rt_box_bool", STR: "rt_box_str"}[v.ty]
+                self.cur.add("call", boxed, label, (v,))
+                v = boxed
+            args.append(v)
         ret = info.ret_type or NONE
+        if self.lw.boxed and ret in (INT, FLOAT, BOOL, STR):
+            obj = self.fn.new_vreg(OBJ, "boxed_call")
+            self.cur.add("call", obj, info.label, tuple(args))
+            native = self.fn.new_vreg(ret, "unboxed")
+            unbox = {INT: "rt_unbox_int", FLOAT: "rt_unbox_float",
+                     BOOL: "rt_unbox_bool", STR: "rt_unbox_str"}[ret]
+            self.cur.add("call", native, unbox, (obj,))
+            self.cur.add("call", None, "rt_decref", (obj,))
+            return native
         dst = self.fn.new_vreg(ret) if ret != NONE else None
         self.cur.add("call", dst, info.label, tuple(args))
         return dst
@@ -740,7 +1324,51 @@ class FuncBuilder:
         for i, arg in enumerate(node.args):
             if i:
                 self.cur.add("print", None, "space", None)
+            if self.lw.boxed and isinstance(arg, ast.Constant) \
+                    and isinstance(arg.value, int) and not isinstance(arg.value, bool) \
+                    and not (-2**63 <= arg.value < 2**63):
+                d = self.fn.new_vreg(STR, "big_desc")
+                self.cur.add("str", d, self.lw.string_offset(str(arg.value)))
+                o = self.fn.new_vreg(OBJ, "big_obj")
+                self.cur.add("call", o, "rt_bigint_from_decimal", (d,))
+                self.cur.add("call", None, "rt_print_obj", (o,))
+                self.cur.add("call", None, "rt_decref", (o,))
+                continue
+            if self.lw.boxed and isinstance(arg, ast.Constant) \
+                    and isinstance(arg.value, bytes):
+                try:
+                    text = arg.value.decode("ascii")
+                except UnicodeDecodeError:
+                    raise UnsupportedError("non-ASCII bytes literal", arg)
+                d = self.fn.new_vreg(STR, "bytes_desc")
+                self.cur.add("str", d, self.lw.string_offset(text))
+                o = self.fn.new_vreg(OBJ, "bytes_obj")
+                self.cur.add("call", o, "rt_box_bytes", (d,))
+                self.cur.add("call", None, "rt_print_obj", (o,))
+                self.cur.add("call", None, "rt_decref", (o,))
+                continue
+            if self.lw.boxed and (
+                    isinstance(arg, (ast.List, ast.Tuple, ast.Set, ast.Dict))
+                    or getattr(arg, "_vela_ty", None) in ("list", "tuple", "set", "dict")):
+                v = self.expr(arg)
+                self.cur.add("call", None, "rt_print_obj", (v,))
+                continue
             v = self.expr(arg)
+            if self.lw.boxed and (v is None or v.ty in (NONE, INT, FLOAT, BOOL, STR)):
+                o = self.fn.new_vreg(OBJ, "boxed")
+                if v is None or v.ty == NONE:
+                    self.cur.add("call", o, "rt_box_none", ())
+                elif v.ty == INT:
+                    self.cur.add("call", o, "rt_box_int", (v,))
+                elif v.ty == FLOAT:
+                    self.cur.add("call", o, "rt_box_float", (v,))
+                elif v.ty == STR:
+                    self.cur.add("call", o, "rt_box_str", (v,))
+                else:
+                    self.cur.add("call", o, "rt_box_bool", (v,))
+                self.cur.add("print", None, "obj", o)
+                self.cur.add("call", None, "rt_decref", (o,))
+                continue
             if v is None or v.ty == NONE:
                 self.cur.add("print", None, "none", None)
             elif v.ty == FLOAT:
@@ -750,7 +1378,12 @@ class FuncBuilder:
             elif v.ty == STR:
                 self.cur.add("print", None, "str", v)
             else:
-                self.cur.add("print", None, "int", v)
+                if self.lw.boxed:
+                    o = self.fn.new_vreg(OBJ, "boxed")
+                    self.cur.add("call", o, "rt_box_int", (v,))
+                    self.cur.add("print", None, "obj", o)
+                else:
+                    self.cur.add("print", None, "int", v)
         self.cur.add("print", None, "nl", None)
 
 

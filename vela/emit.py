@@ -220,10 +220,15 @@ class FuncEmitter:
             self.emit_ret(ins)
         elif op == "print":
             self.emit_print(ins)
+        elif op == "addr":
+            self.emit_addr(ins)
         else:  # pragma: no cover
             raise AssertionError(f"unknown IR op {op}")
 
     # -- individual instructions ------------------------------------------
+    def emit_addr(self, ins) -> None:
+        self.a.mov_abs64("rax", ("text", ins.args[0]))
+        self._write_gpr(ins.dst, "rax")
     def emit_arg(self, ins) -> None:
         v = ins.dst
         idx = ins.args[0]
@@ -576,6 +581,11 @@ class FuncEmitter:
             if src != "xmm0":
                 a.movsd_rr("xmm0", src)
             a.call(self.rt.PRINT_FLOAT)
+        elif kind == "obj":
+            src = self._read_gpr(v, {"rcx"})
+            if src != "rcx":
+                a.mov_rr("rcx", src)
+            a.call(self.rt.PRINT_OBJ)
         elif kind == "none":
             a.call(self.rt.PRINT_NONE)
         elif kind == "nl":

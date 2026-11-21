@@ -42,7 +42,7 @@ CC = {
     "g": 0xF, "nle": 0xF,
 }
 
-GPR_POOL = ["rbx", "rsi", "rdi", "r12", "r13", "r14", "r15"]
+GPR_POOL = ["rbx", "rdi", "r12", "r13", "r14", "r15"]
 GPR_SCRATCH = ["rax", "r10", "r11"]
 XMM_POOL = [f"xmm{i}" for i in range(6, 16)]
 XMM_SCRATCH = [f"xmm{i}" for i in range(0, 6)]
@@ -176,6 +176,8 @@ class Asm:
             elif f.kind == "abs64":
                 sec, off = f.target  # type: ignore[misc]
                 if sec == "text":
+                    if isinstance(off, str):
+                        off = self.labels[off]
                     addr = image_base + rvas["text"] + off
                 else:
                     addr = image_base + rvas[sec] + off

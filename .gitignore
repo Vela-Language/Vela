@@ -21,3 +21,5 @@ temp/
 # Extension build artifacts
 *.pyd
 .venv/
+
+/dist/*

@@ -19,6 +19,7 @@ import ast
 from dataclasses import dataclass, field
 
 from .errors import UnsupportedError, VelaCompileError, VelaTypeError
+from .imports import expand_imports
 from .ir import BOOL, FLOAT, INT, NONE, STR, UNKNOWN
 
 ANNOTATIONS = {"int": INT, "float": FLOAT, "bool": BOOL, "str": STR, "None": NONE}
@@ -84,6 +85,7 @@ class FuncInfo:
     var_types: dict[str, str | None] = field(default_factory=dict)
     returns: list[str] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)
+    globals: set[str] = field(default_factory=set)
 
     @property
     def label(self) -> str:
@@ -98,15 +100,82 @@ def always_returns(stmts: list[ast.stmt]) -> bool:
         return True
     if isinstance(last, ast.If):
         return always_returns(last.body) and always_returns(last.orelse)
+    if isinstance(last, ast.Try):
+        return (always_returns(last.body)
+                and all(always_returns(h.body) for h in last.handlers))
     if isinstance(last, ast.While) and isinstance(last.test, ast.Constant) and last.test.value is True:
         return True
     return False
 
 
+
+
+class _CallRenamer(ast.NodeTransformer):
+    def __init__(self, old: str, new: str, captures: list[str] | None = None) -> None:
+        self.old = old
+        self.new = new
+        self.captures = captures or []
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        self.generic_visit(node)
+        if isinstance(node.func, ast.Name) and node.func.id == self.old:
+            node.func.id = self.new
+            if self.captures:
+                node.args = [ast.Name(id=c, ctx=ast.Load())
+                             for c in self.captures] + node.args
+        return node
+
+
+def hoist_nested_functions(tree: ast.Module) -> None:
+    """Hoist directly nested defs to module level and qualify their calls.
+
+    Captures are not supported: the hoisted function cannot see the outer
+    function's locals, so such programs fail with the normal name error.
+    """
+    added: list[ast.stmt] = []
+
+    def walk(fn: ast.FunctionDef, prefix: str) -> None:
+        for stmt in list(fn.body):
+            if not isinstance(stmt, ast.FunctionDef):
+                continue
+            qualified = f"{prefix}__{stmt.name}"
+            outer_vars = {a.arg for a in fn.args.args}
+            for sub in ast.walk(fn):
+                if isinstance(sub, (ast.Assign, ast.AnnAssign)):
+                    targets = sub.targets if isinstance(sub, ast.Assign) else [sub.target]
+                    for t in targets:
+                        if isinstance(t, ast.Name):
+                            outer_vars.add(t.id)
+            params = {a.arg for a in stmt.args.args}
+            assigned = set()
+            for sub in ast.walk(stmt):
+                if isinstance(sub, ast.Assign):
+                    for t in sub.targets:
+                        if isinstance(t, ast.Name):
+                            assigned.add(t.id)
+            used = {n.id for n in ast.walk(stmt)
+                    if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+            captures = sorted(n for n in used
+                              if n in outer_vars and n not in params and n not in assigned)
+            stmt.args.args.extend(ast.arg(arg=c) for c in captures)
+            renamer = _CallRenamer(stmt.name, qualified, captures)
+            for inner in fn.body:
+                renamer.visit(inner)
+            stmt.name = qualified
+            added.append(stmt)
+            walk(stmt, qualified)
+
+    for node in list(tree.body):
+        if isinstance(node, ast.FunctionDef):
+            walk(node, node.name)
+    tree.body.extend(added)
+
+
 class Analyzer:
-    def __init__(self, tree: ast.Module, filename: str = "<input>") -> None:
+    def __init__(self, tree: ast.Module, filename: str = "<input>", boxed: bool = False) -> None:
         self.tree = tree
         self.filename = filename
+        self.boxed = boxed
         self.funcs: dict[str, FuncInfo] = {}
         self.main_vars: dict[str, str | None] = {}
         self.has_main_code = False
@@ -114,6 +183,31 @@ class Analyzer:
 
     # -- public ------------------------------------------------------------
     def run(self) -> "Analyzer":
+        if self.boxed:
+            self.tree = expand_imports(self.tree, self.filename)
+            hoist_nested_functions(self.tree)
+        self.const_globals: dict[str, tuple[str, object]] = {}
+        counts: dict[str, int] = {}
+        for stmt in self.tree.body:
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                    and isinstance(stmt.targets[0], ast.Name) \
+                    and isinstance(stmt.value, ast.Constant):
+                name = stmt.targets[0].id
+                counts[name] = counts.get(name, 0) + 1
+                v = stmt.value.value
+                if isinstance(v, bool):
+                    self.const_globals[name] = (BOOL, v)
+                elif isinstance(v, int):
+                    self.const_globals[name] = (INT, v)
+                elif isinstance(v, float):
+                    self.const_globals[name] = (FLOAT, v)
+                elif isinstance(v, str):
+                    self.const_globals[name] = (STR, v)
+                elif v is None:
+                    self.const_globals[name] = (NONE, v)
+        for name, n in counts.items():
+            if n != 1:
+                self.const_globals.pop(name, None)
         self._collect_functions()
         for _ in range(10):
             changed = False
@@ -125,6 +219,10 @@ class Analyzer:
             self._infer_func(info, commit=True)
             self._finalize(info)
         self._infer_main()
+        mutable: set[str] = set()
+        for info in self.funcs.values():
+            mutable |= info.globals
+        self.mutable_globals = mutable
         return self
 
     # -- collection --------------------------------------------------------
@@ -228,12 +326,51 @@ class Analyzer:
     # -- statements --------------------------------------------------------
     def _stmt(self, node: ast.stmt, env: dict[str, str | None],
               rets: list[str], info: FuncInfo | None) -> None:
+        if isinstance(node, ast.FunctionDef):
+            if self.boxed:
+                return
+            raise UnsupportedError("nested function definitions", node)
+        if isinstance(node, ast.Global):
+            if info is None:
+                raise UnsupportedError("global statement at module level", node)
+            for name in node.names:
+                if name not in self.const_globals:
+                    raise UnsupportedError(f"global '{name}' needs a constant module initializer", node)
+                info.globals.add(name)
+                env[name] = self.const_globals[name][0]
+            return
         if isinstance(node, ast.Assign):
-            if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            if len(node.targets) != 1:
                 raise UnsupportedError("assignment to anything but a single name", node)
             target = node.targets[0]
+            if self.boxed and isinstance(target, ast.Subscript):
+                base = self._infer(target.value, env, None)
+                if base in ("list", "dict"):
+                    kt = self._infer(target.slice, env, INT)
+                    if base == "dict" and kt not in (INT, STR):
+                        raise VelaTypeError("dict key must be int or str", node)
+                    vt = self._infer(node.value, env, INT)
+                    if vt not in (INT, BOOL):
+                        raise VelaTypeError(f"container element must be int, got {vt}", node)
+                    return
+            if isinstance(target, ast.Tuple) and self.boxed:
+                ty = self._infer(node.value, env, None)
+                if ty == "tuple":
+                    for elt in target.elts:
+                        if not isinstance(elt, ast.Name):
+                            raise UnsupportedError("tuple unpacking target", node)
+                        self._bind(env, elt.id, INT, elt)
+                    return
+            if not isinstance(target, ast.Name):
+                raise UnsupportedError("assignment to anything but a single name", node)
             want = env.get(target.id)
             ty = self._infer(node.value, env, want)
+            if info is not None and target.id in info.globals:
+                if want is not None and not assignable(ty, want):
+                    raise VelaTypeError(
+                        f"cannot assign {type_name(ty)} to global '{target.id}' "
+                        f"of type {want}", node)
+                return
             self._bind(env, target.id, ty, target)
             node._vela_ty = ty
             return
@@ -281,9 +418,60 @@ class Analyzer:
                 self._stmt(s, body_env, rets, info)
             self._merge_env(env, env, body_env)
             return
+        if isinstance(node, ast.Try) and self.boxed:
+            if not node.handlers:
+                raise UnsupportedError("try without except/finally", node)
+            for stmt in node.body:
+                self._stmt(stmt, dict(env), rets, info)
+            for stmt in node.orelse:
+                self._stmt(stmt, dict(env), rets, info)
+            for stmt in node.finalbody:
+                self._stmt(stmt, dict(env), rets, info)
+            for h in node.handlers:
+                if h.type is not None and not isinstance(h.type, ast.Name):
+                    raise UnsupportedError("except with a non-name type", node)
+                h_env = dict(env)
+                if h.name:
+                    h_env[h.name] = STR
+                for stmt in h.body:
+                    self._stmt(stmt, h_env, rets, info)
+            return
+        if isinstance(node, ast.Assert) and self.boxed:
+            self._infer(node.test, env, BOOL)
+            if node.msg is not None:
+                raise UnsupportedError("assert with a message", node)
+            return
+        if isinstance(node, ast.Raise) and self.boxed:
+            exc = node.exc
+            if exc is not None:
+                if not (isinstance(exc, ast.Call) and isinstance(exc.func, ast.Name)
+                        and len(exc.args) == 1
+                        and isinstance(exc.args[0], ast.Constant)
+                        and isinstance(exc.args[0].value, str)):
+                    raise UnsupportedError("raise with a non-literal exception", node)
+            return
         if isinstance(node, ast.For):
             if not isinstance(node.target, ast.Name):
                 raise UnsupportedError("for-loop target other than a name", node)
+            if self.boxed and isinstance(node.iter, ast.Call) \
+                    and isinstance(node.iter.func, ast.Name) \
+                    and node.iter.func.id == "range":
+                self._range_args(node.iter, env)
+                env[node.target.id] = INT
+                body_env = dict(env)
+                for s in node.body:
+                    self._stmt(s, body_env, rets, info)
+                self._merge_env(env, env, body_env)
+                return
+            if self.boxed:
+                it_ty = self._infer(node.iter, env, None)
+                if it_ty in ("list", "tuple", "set", "dict"):
+                    env[node.target.id] = INT
+                    body_env = dict(env)
+                    for s in node.body:
+                        self._stmt(s, body_env, rets, info)
+                    self._merge_env(env, env, body_env)
+                    return
             self._range_args(node.iter, env)
             env[node.target.id] = INT
             body_env = dict(env)
@@ -374,12 +562,16 @@ class Analyzer:
                 return BOOL
             if isinstance(v, int):
                 if not -(2 ** 63) <= v < 2 ** 63:
+                    if self.boxed:
+                        return INT
                     raise VelaTypeError("integer literal does not fit in int64", node)
                 return INT
             if isinstance(v, float):
                 return FLOAT
             if isinstance(v, str):
                 return STR
+            if isinstance(v, bytes) and self.boxed:
+                return "bytes"
             if v is None:
                 return NONE
             raise UnsupportedError(f"constant of type {type(v).__name__}", node)
@@ -391,6 +583,8 @@ class Analyzer:
                     env[node.id] = hint
                     return hint
                 return t
+            if node.id in self.const_globals and not self._module_scope:
+                return self.const_globals[node.id][0]
             if node.id in self.funcs:
                 raise UnsupportedError("function object as a value", node)
             if self._module_scope:
@@ -444,7 +638,14 @@ class Analyzer:
                 if rt is None and lt is not None:
                     rt = lt
                     self._retro(comp, lt, env)
+                if self.boxed and isinstance(op, (ast.In, ast.NotIn)) \
+                        and rt in ("list", "tuple", "set", "dict") and lt in (INT, BOOL, STR):
+                    continue
                 if lt is not None and rt is not None:
+                    if self.boxed and lt == STR and rt == STR \
+                            and isinstance(op, (ast.Eq, ast.NotEq)):
+                        left, lt = comp, rt
+                        continue
                     if not (is_numeric(lt) and is_numeric(rt)):
                         raise VelaTypeError(
                             f"cannot compare {type_name(lt)} with {type_name(rt)}", node)
@@ -472,10 +673,55 @@ class Analyzer:
             return self._call(node, env, hint)
 
         if isinstance(node, ast.Subscript):
+            if self.boxed and isinstance(node.slice, ast.Slice):
+                base = self._infer(node.value, env, None)
+                if base == "str":
+                    if node.slice.lower is not None:
+                        self._infer(node.slice.lower, env, INT)
+                    if node.slice.upper is not None:
+                        self._infer(node.slice.upper, env, INT)
+                    return STR
+            if self.boxed:
+                base = self._infer(node.value, env, None)
+                if base == "str":
+                    self._infer(node.slice, env, INT)
+                    return STR
+                if base == "dict":
+                    if self._infer(node.slice, env, None) not in (INT, STR):
+                        raise VelaTypeError("dict key must be int or str", node)
+                    return INT
+                if base in ("list", "tuple"):
+                    self._infer(node.slice, env, INT)
+                    return INT
             raise UnsupportedError("subscripting (lists, dicts, strings)", node)
         if isinstance(node, ast.Attribute):
             raise UnsupportedError("attribute access / method calls", node)
-        if isinstance(node, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
+        if isinstance(node, ast.Dict):
+            if self.boxed:
+                for k, v in zip(node.keys, node.values):
+                    if not (isinstance(k, ast.Constant)
+                            and isinstance(k.value, (int, str))
+                            and isinstance(v, ast.Constant) and isinstance(v.value, int)):
+                        raise UnsupportedError(
+                            "dict entries other than int/str keys and int values", node)
+                return "dict"
+            raise UnsupportedError("container literals", node)
+        if isinstance(node, ast.Tuple) and self.boxed:
+            for item in node.elts:
+                if not isinstance(item, ast.Constant) or not isinstance(item.value, int):
+                    raise UnsupportedError("tuple elements other than int constants", node)
+            return "tuple"
+        if isinstance(node, ast.Set) and self.boxed:
+            for item in node.elts:
+                if not isinstance(item, ast.Constant) or not isinstance(item.value, int):
+                    raise UnsupportedError("set elements other than int constants", node)
+            return "set"
+        if isinstance(node, (ast.List, ast.Set)):
+            if self.boxed and isinstance(node, ast.List):
+                for item in node.elts:
+                    if not isinstance(item, ast.Constant) or not isinstance(item.value, int):
+                        raise UnsupportedError("list elements other than int constants", node)
+                return "list"
             raise UnsupportedError("container literals", node)
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             raise UnsupportedError("comprehensions", node)
@@ -516,10 +762,18 @@ class Analyzer:
         if b is None:
             b = a
         assert a is not None and b is not None
+        if self.boxed and a == STR and b == STR:
+            if isinstance(op, ast.Add):
+                return STR
+            if isinstance(op, (ast.Eq, ast.NotEq)):
+                return BOOL
         if isinstance(op, ast.Div):
             if not (is_numeric(a) and is_numeric(b)):
                 raise VelaTypeError(f"'/' requires numbers, got {a} and {b}", node)
             return FLOAT
+        if self.boxed and a == "set" and b == "set" \
+                and isinstance(op, (ast.BitAnd, ast.BitOr)):
+            return "set"
         if isinstance(op, (ast.BitAnd, ast.BitOr, ast.BitXor, ast.LShift, ast.RShift)):
             if a not in (INT, BOOL) or b not in (INT, BOOL):
                 raise VelaTypeError(f"bitwise/shift operators require int, got {a} and {b}", node)
@@ -539,6 +793,95 @@ class Analyzer:
               hint: str | None) -> str | None:
         if node.keywords:
             raise UnsupportedError("keyword arguments", node)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "endswith" and self.boxed:
+            if len(node.args) != 1:
+                raise VelaCompileError("endswith() takes one argument", node)
+            base = self._infer(node.func.value, env, None)
+            if base == "str":
+                self._infer(node.args[0], env, STR)
+                return BOOL
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "find" and self.boxed:
+            if len(node.args) != 1:
+                raise VelaCompileError("find() takes one argument", node)
+            base = self._infer(node.func.value, env, None)
+            if base == "str":
+                self._infer(node.args[0], env, STR)
+                return INT
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "startswith" and self.boxed:
+            if len(node.args) != 1:
+                raise VelaCompileError("startswith() takes one argument", node)
+            base = self._infer(node.func.value, env, None)
+            if base == "str":
+                self._infer(node.args[0], env, STR)
+                return BOOL
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "lower" and self.boxed:
+            if node.args:
+                raise VelaCompileError("lower() takes no arguments", node)
+            base = self._infer(node.func.value, env, None)
+            if base == "str":
+                return STR
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "upper" and self.boxed:
+            if node.args:
+                raise VelaCompileError("upper() takes no arguments", node)
+            base = self._infer(node.func.value, env, None)
+            if base == "str":
+                return STR
+        if isinstance(node.func, ast.Attribute) and node.func.attr in ("keys", "values") \
+                and self.boxed:
+            if node.args:
+                raise VelaCompileError(f"{node.func.attr}() takes no arguments", node)
+            base = self._infer(node.func.value, env, None)
+            if base == "dict":
+                return "list"
+        if isinstance(node.func, ast.Attribute) and node.func.attr in ("count", "index") \
+                and self.boxed:
+            if len(node.args) != 1:
+                raise VelaCompileError(f"{node.func.attr}() takes one argument", node)
+            base = self._infer(node.func.value, env, None)
+            if base == "list":
+                self._infer(node.args[0], env, INT)
+                return INT
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "extend" and self.boxed:
+            if len(node.args) != 1:
+                raise VelaCompileError("extend() takes one argument", node)
+            base = self._infer(node.func.value, env, None)
+            if base == "list":
+                self._infer(node.args[0], env, None)
+                return NONE
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "pop" and self.boxed:
+            if len(node.args) > 1:
+                raise VelaCompileError("pop() takes at most one argument", node)
+            base = self._infer(node.func.value, env, None)
+            if base == "list":
+                if node.args:
+                    self._infer(node.args[0], env, INT)
+                return INT
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "add" and self.boxed:
+            if len(node.args) != 1:
+                raise VelaCompileError("add() takes one argument", node)
+            base = self._infer(node.func.value, env, None)
+            if base == "set":
+                vt = self._infer(node.args[0], env, INT)
+                if vt not in (INT, BOOL):
+                    raise VelaTypeError(f"set element must be int, got {vt}", node)
+                return NONE
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "get" and self.boxed:
+            if len(node.args) != 2:
+                raise VelaCompileError("get() takes two arguments", node)
+            base = self._infer(node.func.value, env, None)
+            if base == "dict":
+                self._infer(node.args[0], env, INT)
+                self._infer(node.args[1], env, INT)
+                return INT
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "append" and self.boxed:
+            if len(node.args) != 1:
+                raise VelaCompileError("append() takes exactly one argument", node)
+            base = self._infer(node.func.value, env, None)
+            if base == "list":
+                vt = self._infer(node.args[0], env, INT)
+                if vt not in (INT, BOOL):
+                    raise VelaTypeError(f"append() requires int, got {vt}", node)
+                return NONE
         if not isinstance(node.func, ast.Name):
             raise UnsupportedError("calling an attribute or expression", node)
         name = node.func.id
@@ -550,15 +893,20 @@ class Analyzer:
         if name == "print":
             for a in node.args:
                 t = self._infer(a, env, None)
-                if t is not None and t not in (INT, FLOAT, BOOL, STR, NONE):
+                allowed = (INT, FLOAT, BOOL, STR, NONE)
+                if self.boxed and t in ("list", "tuple", "set", "dict", "bytes"):
+                    allowed = allowed + (t,)
+                if t is not None and t not in allowed:
                     raise VelaTypeError(f"print() cannot print a value of type {t}", a)
             return NONE
         if name == "len":
             if len(node.args) != 1:
                 raise VelaCompileError("len() takes exactly one argument", node)
-            t = self._infer(node.args[0], env, STR)
+            t = self._infer(node.args[0], env, None)
+            if self.boxed and t in ("list", "tuple", "set", "dict"):
+                return INT
             if t is not None and t != STR:
-                raise VelaTypeError(f"len() requires str, got {t}", node)
+                raise VelaTypeError(f"len() requires str or list, got {t}", node)
             return INT
         if name in ("abs", "min", "max"):
             if name == "abs":
@@ -614,6 +962,11 @@ class Analyzer:
                 if want is None and t is not None:
                     info.param_types[i] = t
                 elif want is not None and not assignable(t, want):
+                    if self.boxed and info.param_ann[i] is None \
+                            and want == INT and t == STR:
+                        info.param_types[i] = STR
+                        self._infer_func(info, commit=True)
+                        continue
                     raise VelaTypeError(
                         f"argument {i + 1} of {name}() is {type_name(t)} but the "
                         f"parameter is {want}", arg)

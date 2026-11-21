@@ -38,18 +38,18 @@ class CompileResult:
     program: Program
 
 
-def compile_source(source: str, filename: str = "<input>") -> CompileResult:
+def compile_source(source: str, filename: str = "<input>", boxed: bool = False) -> CompileResult:
     t0 = time.perf_counter()
     tree = ast.parse(source, filename)
 
-    analyzer = Analyzer(tree, filename).run()
+    analyzer = Analyzer(tree, filename, boxed=boxed).run()
 
     rdata = DataBuilder()
     data = DataBuilder()
     imports = make_imports()
     runtime = Runtime(imports, rdata, data)
 
-    lowerer = Lowerer(analyzer, rdata, filename)
+    lowerer = Lowerer(analyzer, rdata, filename, boxed=boxed)
     program = lowerer.run()
     inline.optimize(program)
     opt.optimize(program)
@@ -96,13 +96,13 @@ def compile_source(source: str, filename: str = "<input>") -> CompileResult:
     return CompileResult(exe=exe, stats=stats, program=program)
 
 
-def compile_file(path: str) -> CompileResult:
+def compile_file(path: str, boxed: bool = False) -> CompileResult:
     # utf-8-sig: CPython's tokenizer accepts (and strips) a UTF-8 BOM.
     with open(path, "r", encoding="utf-8-sig") as f:
         source = f.read()
-    return compile_source(source, path)
+    return compile_source(source, path, boxed=boxed)
 
 
-def analyze_source(source: str, filename: str = "<input>") -> Analyzer:
+def analyze_source(source: str, filename: str = "<input>", boxed: bool = False) -> Analyzer:
     tree = ast.parse(source, filename)
-    return Analyzer(tree, filename).run()
+    return Analyzer(tree, filename, boxed=boxed).run()

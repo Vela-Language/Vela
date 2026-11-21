@@ -37,7 +37,7 @@ def _print_stats(result) -> None:
 
 def _parse(argv: list[str]):
     opts = {"output": None, "strict": False, "stats": False, "emit_ir": False,
-            "verbose": False, "args": []}
+            "verbose": False, "boxed": False, "args": []}
     i = 0
     positional: list[str] = []
     while i < len(argv):
@@ -52,6 +52,8 @@ def _parse(argv: list[str]):
             opts["output"] = argv[i]
         elif a == "--strict":
             opts["strict"] = True
+        elif a == "--boxed":
+            opts["boxed"] = True
         elif a == "--stats":
             opts["stats"] = True
         elif a == "--emit-ir":
@@ -73,7 +75,7 @@ def cmd_build(argv: list[str]) -> int:
         return 2
     src = pos[0]
     try:
-        result = compile_file(src)
+        result = compile_file(src, boxed=opts["boxed"])
     except (VelaError, SyntaxError) as exc:
         _err(_format_error(exc, src))
         return 1
@@ -125,7 +127,7 @@ def cmd_run(argv: list[str]) -> int:
     src = pos[0]
     program_args = opts["args"]
     try:
-        result = compile_file(src)
+        result = compile_file(src, boxed=opts["boxed"])
     except SyntaxError as exc:
         _err(_format_error(exc, src))
         return 1
@@ -162,7 +164,7 @@ def cmd_bench(argv: list[str]) -> int:
     for src in pos:
         t0 = time.perf_counter()
         try:
-            result = compile_file(src)
+            result = compile_file(src, boxed=opts["boxed"])
         except (VelaError, SyntaxError) as exc:
             _err(_format_error(exc, src))
             return 1

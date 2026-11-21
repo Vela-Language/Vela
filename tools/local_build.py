@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -36,9 +37,12 @@ def source_version() -> str:
 
 def latest_prerelease(repo: str = REPO, timeout: float = 12.0) -> str | None:
     url = f"https://api.github.com/repos/{repo}/releases?per_page=20"
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "vela-local-build",
-                      "Accept": "application/vnd.github+json"})
+    headers = {"User-Agent": "vela-local-build",
+               "Accept": "application/vnd.github+json"}
+    token = os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             releases = json.load(resp)
