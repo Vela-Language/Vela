@@ -1089,6 +1089,11 @@ class Analyzer:
                         info.param_types[i] = STR
                         self._infer_func(info, commit=True)
                         continue
+                    if self.boxed and info.param_ann[i] is None \
+                            and want == INT and t == "bigint":
+                        info.param_types[i] = "bigint"
+                        self._infer_func(info, commit=True)
+                        continue
                     raise VelaTypeError(
                         f"argument {i + 1} of {name}() is {type_name(t)} but the "
                         f"parameter is {want}", arg)

@@ -846,7 +846,7 @@ class BoxedTests(unittest.TestCase):
     def test_boxed_bigint_var_div_explicit_error(self):
         src = os.path.join(TMPDIR, "boxed_bigvar_div.vl")
         with open(src, "w", encoding="utf-8") as f:
-            f.write("a = 99999999999999999999 + 1\nb = 77777777777777777777\nprint(a // b)\n")
+            f.write("def div(a, b):\n    return a // b\nprint(div(99999999999999999999, 77777777777777777777))\n")
         p = vela("run", "--boxed", src)
         self.assertEqual(p.returncode, 1)
         self.assertIn(b"compile-time constant", p.stderr + p.stdout)
@@ -868,6 +868,16 @@ class BoxedTests(unittest.TestCase):
         p = vela("run", "--boxed", src)
         self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
         self.assertIn(b"[(1, 10), (2, 20)]", p.stdout)
+
+    def test_boxed_bigint_computed_const_div(self):
+        src = os.path.join(TMPDIR, "boxed_bigcomp_div.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("a = 99999999999999999999 + 1\nb = 77777777777777777777\nprint(a // b, a % b)\n")
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        out = p.stdout.decode("utf-8", "replace")
+        self.assertIn("1", out)
+        self.assertIn(str(100000000000000000000 % 77777777777777777777), out)
 
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")

@@ -42,7 +42,7 @@ class Lowerer:
     def lower_function(self, info: FuncInfo) -> Function:
         native_ret = info.ret_type or NONE
         boxed_ret = self.boxed and (
-            native_ret in (INT, FLOAT, BOOL, STR)
+            native_ret in (INT, FLOAT, BOOL, STR, "bigint")
             or (self.dynamic_int and native_ret == INT))
         fn = Function(info.label, OBJ if boxed_ret else native_ret)
         b = FuncBuilder(self, fn, info.name, info.var_types, info.ret_type or NONE)
@@ -53,7 +53,7 @@ class Lowerer:
                 v = fn.new_vreg(OBJ, pname + "_obj")
                 fn.params.append(v)
                 fn.entry.add("arg", v, i)
-            elif self.boxed and pty in ("list", "dict", "tuple", "set"):
+            elif self.boxed and pty in ("list", "dict", "tuple", "set", "bigint"):
                 v = fn.new_vreg(OBJ, pname + "_obj")
                 fn.params.append(v)
                 fn.entry.add("arg", v, i)
@@ -470,7 +470,7 @@ class FuncBuilder:
                 return
             value = self.expr(node.value)
             if isinstance(target, ast.Name):
-                cv = self.const_int_value(node.value)
+                cv = self.const_value(node.value)
                 if cv is not None and not -(2 ** 63) <= cv < 2 ** 63:
                     self.big_consts[target.id] = cv
                 else:
@@ -1054,6 +1054,29 @@ class FuncBuilder:
             return v
         if isinstance(node, ast.Name):
             return self.big_consts.get(node.id)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            inner = self.const_value(node.operand)
+            return -inner if inner is not None else None
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd):
+            return self.const_value(node.operand)
+        if isinstance(node, ast.BinOp):
+            a = self.const_value(node.left)
+            b = self.const_value(node.right)
+            if a is None or b is None:
+                return None
+            try:
+                if isinstance(node.op, ast.Add):
+                    return a + b
+                if isinstance(node.op, ast.Sub):
+                    return a - b
+                if isinstance(node.op, ast.Mult):
+                    return a * b
+                if isinstance(node.op, ast.FloorDiv) and b:
+                    return a // b
+                if isinstance(node.op, ast.Mod) and b:
+                    return a % b
+            except ArithmeticError:
+                return None
         return None
 
     def binop(self, node: ast.BinOp) -> VReg:
@@ -1524,7 +1547,7 @@ class FuncBuilder:
             self.cur.add("call", native, unbox, (obj,))
             self.cur.add("call", None, "rt_decref", (obj,))
             return native
-        dst_ty = OBJ if (self.dyn and ret == INT) else ret
+        dst_ty = OBJ if ((self.dyn and ret == INT) or ret == "bigint") else ret
         dst = self.fn.new_vreg(dst_ty) if ret != NONE else None
         self.cur.add("call", dst, info.label, tuple(args))
         return dst
