@@ -1037,6 +1037,8 @@ class Analyzer:
                 t = self._infer(node.args[0], env, hint)
                 if t is None:
                     return None
+                if self.boxed and t == "bigint":
+                    return "bigint"
                 if not is_numeric(t):
                     raise VelaTypeError(f"abs() requires a number, got {t}", node)
                 return norm_numeric(t)

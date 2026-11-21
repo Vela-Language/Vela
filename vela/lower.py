@@ -1497,6 +1497,10 @@ class FuncBuilder:
             return r
         if name == "abs":
             v = self.expr(node.args[0])
+            if v.ty == OBJ:
+                out = self.fn.new_vreg(OBJ, "abs_num")
+                self.cur.add("call", out, "rt_num_abs", (v,))
+                return out
             return self.emit_abs(v)
         if name in ("min", "max"):
             a = self.expr(node.args[0])
