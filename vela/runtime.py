@@ -121,6 +121,8 @@ class Runtime:
     BIGINT_CMP_MAG = "rt_bigint_cmp_mag"
     BIGINT_NEG = "rt_bigint_neg"
     BIGINT_LEN = "rt_bigint_len"
+    BIGINT_DIGIT_AT = "rt_bigint_digit_at"
+    BIGINT_REQUIRE = "rt_bigint_require"
     BIGINT_DIV_SMALL = "rt_bigint_div_small"
     BIGINT_MOD_SMALL = "rt_bigint_mod_small"
     LIST_NEW = "rt_list_new"
@@ -222,6 +224,8 @@ class Runtime:
             "Vela runtime error: pop from empty list\n")
         self.msg_big = rdata.add_str_descriptor(
             "Vela runtime error: bigint too large for this operation\n")
+        self.msg_bigdiv = rdata.add_str_descriptor(
+            "Vela runtime error: bigint division requires non-negative dividend and positive divisor\n")
         self.msg_key = rdata.add_str_descriptor(
             "Vela runtime error: missing dict key\n")
         self.msg_index = rdata.add_str_descriptor(
@@ -3297,6 +3301,32 @@ class Runtime:
 
         a.bind(self.BIGINT_LEN)
         a.mov_rm("rax", "rcx", 40)
+        a.ret()
+
+        a.bind(self.BIGINT_REQUIRE)
+        a.mov_rm("rax", "rcx", 32)
+        a.test_rr("rax", "rax")
+        a.jcc("s", "brq_fail")
+        a.test_rr("rdx", "rdx")
+        a.jcc("ne", "brq_ok")
+        a.mov_rm("rax", "rcx", 40)
+        a.cmp_ri("rax", 1)
+        a.jcc("ne", "brq_ok")
+        a.movzx8_rm("rax", "rcx", 48)
+        a.cmp_ri("rax", 0x30)
+        a.jcc("e", "brq_fail")
+        a.bind("brq_ok")
+        a.ret()
+        a.bind("brq_fail")
+        a.mov_abs64("rcx", ("rdata", self.msg_bigdiv))
+        a.jmp(self.FAIL)
+
+        a.bind(self.BIGINT_DIGIT_AT)
+        a.mov_rr("rax", "rcx")
+        a.add_ri("rax", 48)
+        a.add_rr("rax", "rdx")
+        a.movzx8_rm("rax", "rax", 0)
+        a.sub_ri("rax", 0x30)
         a.ret()
 
         a.bind(self.BIGINT_CMP)
