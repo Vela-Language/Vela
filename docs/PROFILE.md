@@ -1,5 +1,6 @@
-# Vela Native Profile（v0.1）
+# Vela Native Profile（v0.1 静态基线说明）
 
+> **当前能力真源提示**：本文档仅描述 v0.1 默认无装箱静态子集。包含 `--boxed` / `--boxed-dyn` 对象运行时、精确 GC、大整数、容器、异常、类与生成器在内的**完整当前能力表（已实现 / 未实现 / 明确豁免）请以 [CAPABILITIES.md](CAPABILITIES.md) 为准**。
 > 对标版本：Vela v0.1.0 · 语法前端：宿主 CPython `ast`
 
 native profile 是 Python 的一个**静态类型子集**：落在子集内的代码被编译为原生机器码，

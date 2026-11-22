@@ -546,6 +546,8 @@ class FuncBuilder:
                 self.locals[name] = v
             if value is None:
                 raise VelaTypeError(f"cannot assign None to list '{name}'", node)
+            if value in self.locals.values() and value is not v:
+                self.cur.add("call", None, "rt_incref", (value,))
             self.cur.add("mov", v, value)
             self.assigned.add(name)
             return
@@ -582,11 +584,11 @@ class FuncBuilder:
             self.cur.add("mov", v, value)
         self.assigned.add(name)
 
-    def boxed_cleanup(self) -> None:
+    def boxed_cleanup(self, keep: VReg | None = None) -> None:
         if not self.lw.boxed:
             return
         for name, v in list(self.locals.items()):
-            if name in self.param_names:
+            if name in self.param_names or v is keep:
                 continue
             if v.ty == OBJ and name in self.assigned:
                 self.cur.add("call", None, "rt_decref", (v,))
@@ -718,13 +720,13 @@ class FuncBuilder:
                              BOOL: "rt_box_bool", STR: "rt_box_str"}[v.ty]
                     self.emit_finally()
                     self.cur.add("call", o, label, (v,))
-                    self.boxed_cleanup()
+                    self.boxed_cleanup(o)
                     if self.lw.boxed:
                         self.cur.add("call", None, "rt_leave", ())
                     self.cur.add("ret", None, o)
                 else:
                     self.emit_finally()
-                    self.boxed_cleanup()
+                    self.boxed_cleanup(v)
                     if self.lw.boxed:
                         self.cur.add("call", None, "rt_leave", ())
                     self.cur.add("ret", None, v)
@@ -913,8 +915,9 @@ class FuncBuilder:
         for stmt in node.finalbody:
             self.stmt(stmt)
         self.cur.add("jmp", None, done.block.label)
-        types = {"ValueError": 1, "TypeError": 2, "Exception": 0,
-                 "BaseException": 0}
+        types = {"ValueError": 1, "TypeError": 2, "StopIteration": 3,
+                 "AttributeError": 4, "KeyError": 5, "IndexError": 6,
+                 "Exception": 0, "BaseException": 0}
         for i, h in enumerate(node.handlers):
             self.use(dispatch[i])
             if h.type is None:
@@ -931,6 +934,8 @@ class FuncBuilder:
                     self.cur.add("br", None, cond, hblocks[i].block.label,
                                  dispatch[i + 1].block.label)
         self.use(dispatch[n])
+        for stmt in node.finalbody:
+            self.stmt(stmt)
         self.cur.add("call", None, "rt_reraise", ())
         self.cur.add("jmp", None, done.block.label)
         for i, h in enumerate(node.handlers):
@@ -957,9 +962,15 @@ class FuncBuilder:
     def raise_stmt(self, node: ast.Raise) -> None:
         desc = self.const_int(0)
         code_val = 1
+        exc_types = {"ValueError": 1, "TypeError": 2, "StopIteration": 3,
+                     "AttributeError": 4, "KeyError": 5, "IndexError": 6}
         if node.exc is not None:
-            desc = self.expr(node.exc.args[0])
-            code_val = {"ValueError": 1, "TypeError": 2}.get(node.exc.func.id, 1)
+            if isinstance(node.exc, ast.Call):
+                if node.exc.args:
+                    desc = self.expr(node.exc.args[0])
+                code_val = exc_types.get(node.exc.func.id, 1)
+            elif isinstance(node.exc, ast.Name):
+                code_val = exc_types.get(node.exc.id, 1)
         cause = self.const_int(0)
         if node.cause is not None:
             c = node.cause
@@ -1129,13 +1140,8 @@ class FuncBuilder:
         if isinstance(node, ast.Dict):
             obj = self.call_rt("rt_dict_new", [], OBJ)
             for k, v in zip(node.keys, node.values):
-                if isinstance(k.value, str):
-                    ko = self.box_scalar(self.expr(k))
-                else:
-                    ko = self.box_scalar(self.const_int(k.value))
-                vo = self.fn.new_vreg(OBJ, "dict_val")
-                vn = self.const_int(v.value)
-                self.cur.add("call", vo, "rt_box_int", (vn,))
+                ko = self.box_scalar(self.expr(k))
+                vo = self.box_scalar(self.expr(v))
                 self.cur.add("call", None, "rt_dict_set", (obj, ko, vo))
             return obj
         if isinstance(node, ast.Set):
@@ -1143,8 +1149,7 @@ class FuncBuilder:
             obj = self.call_rt("rt_list_new", [n], OBJ)
             for i, item in enumerate(node.elts):
                 native = self.expr(item)
-                boxed = self.fn.new_vreg(OBJ, "set_elem")
-                self.cur.add("call", boxed, "rt_box_int", (native,))
+                boxed = self.box_scalar(native)
                 idx = self.const_int(i)
                 self.cur.add("call", None, "rt_list_set", (obj, idx, boxed))
             self.cur.add("call", None, "rt_set_type", (obj,))
@@ -1154,8 +1159,7 @@ class FuncBuilder:
             obj = self.call_rt("rt_list_new", [n], OBJ)
             for i, item in enumerate(node.elts):
                 native = self.expr(item)
-                boxed = self.fn.new_vreg(OBJ, "tuple_elem")
-                self.cur.add("call", boxed, "rt_box_int", (native,))
+                boxed = self.box_scalar(native)
                 idx = self.const_int(i)
                 self.cur.add("call", None, "rt_list_set", (obj, idx, boxed))
             self.cur.add("call", None, "rt_tuple_type", (obj,))
@@ -1165,10 +1169,15 @@ class FuncBuilder:
             obj = self.call_rt("rt_list_new", [n], OBJ)
             for i, item in enumerate(node.elts):
                 native = self.expr(item)
+                if native is not None and native.ty == OBJ:
+                    self.cur.add("call", None, "rt_incref", (native,))
                 boxed = self.box_scalar(native)
                 idx = self.const_int(i)
                 self.cur.add("call", None, "rt_list_set", (obj, idx, boxed))
             return obj
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice) \
+                and getattr(node.value, "_vela_ty", None) in ("str", "list", "tuple", "strlist"):
+            return self.emit_slice(node)
         if isinstance(node, ast.Subscript) and (
                 isinstance(node.value, ast.List)
                 or getattr(node.value, "_vela_ty", None) in ("list", "tuple", "strlist")):
@@ -1182,12 +1191,6 @@ class FuncBuilder:
             native = self.fn.new_vreg(INT)
             self.cur.add("call", native, "rt_unbox_int", (elem,))
             return native
-        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice) \
-                and getattr(node.value, "_vela_ty", None) == "str":
-            desc = self.expr(node.value)
-            start = self.coerce(self.expr(node.slice.lower), INT) if node.slice.lower else self.const_int(0)
-            stop = self.coerce(self.expr(node.slice.upper), INT) if node.slice.upper else self.call_rt("rt_str_len", [desc], INT)
-            return self.call_rt("rt_str_slice", [desc, start, stop], STR)
         if isinstance(node, ast.Subscript) and getattr(node.value, "_vela_ty", None) == "str":
             desc = self.expr(node.value)
             idx = self.coerce(self.expr(node.slice), INT)
@@ -1605,6 +1608,153 @@ class FuncBuilder:
         self.cur.add("call", dst, label, tuple(args))
         return dst  # type: ignore[return-value]
 
+    def emit_slice(self, node: ast.Subscript) -> VReg:
+        assert isinstance(node.slice, ast.Slice)
+        base_ty = getattr(node.value, "_vela_ty", "list")
+        seq = self.expr(node.value)
+        is_str = base_ty == "str"
+        length = self.call_rt("rt_str_len" if is_str else "rt_list_len", [seq], INT)
+        step = self.coerce(self.expr(node.slice.step), INT) if node.slice.step is not None else self.const_int(1)
+        zero = self.const_int(0)
+        one = self.const_int(1)
+        neg_one = self.const_int(-1)
+        len_m1 = self.fn.new_vreg(INT, "len_m1")
+        self.cur.add("bin", len_m1, "sub", length, one)
+
+        step_neg = self.fn.new_vreg(BOOL, "step_neg")
+        self.cur.add("cmp", step_neg, "lt", step, zero)
+
+        start = self.fn.new_vreg(INT, "sl_start")
+        if node.slice.lower is None:
+            s_pos = self.new_block("sl_s_pos")
+            s_neg = self.new_block("sl_s_neg")
+            s_join = self.new_block("sl_s_join")
+            self.cur.add("br", None, step_neg, s_neg.block.label, s_pos.block.label)
+            self.use(s_pos)
+            self.cur.add("mov", start, zero)
+            self.cur.add("jmp", None, s_join.block.label)
+            self.use(s_neg)
+            self.cur.add("mov", start, len_m1)
+            self.cur.add("jmp", None, s_join.block.label)
+            self.use(s_join)
+        else:
+            raw_s = self.coerce(self.expr(node.slice.lower), INT)
+            self.cur.add("mov", start, raw_s)
+            c_neg = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", c_neg, "lt", start, zero)
+            b_add = self.new_block("sl_s_add")
+            b_clamp = self.new_block("sl_s_clamp")
+            self.cur.add("br", None, c_neg, b_add.block.label, b_clamp.block.label)
+            self.use(b_add)
+            tmp_s = self.fn.new_vreg(INT)
+            self.cur.add("bin", tmp_s, "add", start, length)
+            self.cur.add("mov", start, tmp_s)
+            self.cur.add("jmp", None, b_clamp.block.label)
+            self.use(b_clamp)
+            c_low = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", c_low, "lt", start, zero)
+            b_low = self.new_block("sl_s_low")
+            b_hi_chk = self.new_block("sl_s_hichk")
+            self.cur.add("br", None, c_low, b_low.block.label, b_hi_chk.block.label)
+            self.use(b_low)
+            self.cur.add("mov", start, zero)
+            self.cur.add("jmp", None, b_hi_chk.block.label)
+            self.use(b_hi_chk)
+            c_hi = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", c_hi, "gt", start, length)
+            b_hi = self.new_block("sl_s_hi")
+            b_sdone = self.new_block("sl_s_done")
+            self.cur.add("br", None, c_hi, b_hi.block.label, b_sdone.block.label)
+            self.use(b_hi)
+            self.cur.add("mov", start, length)
+            self.cur.add("jmp", None, b_sdone.block.label)
+            self.use(b_sdone)
+
+        stop = self.fn.new_vreg(INT, "sl_stop")
+        if node.slice.upper is None:
+            e_pos = self.new_block("sl_e_pos")
+            e_neg = self.new_block("sl_e_neg")
+            e_join = self.new_block("sl_e_join")
+            self.cur.add("br", None, step_neg, e_neg.block.label, e_pos.block.label)
+            self.use(e_pos)
+            self.cur.add("mov", stop, length)
+            self.cur.add("jmp", None, e_join.block.label)
+            self.use(e_neg)
+            self.cur.add("mov", stop, neg_one)
+            self.cur.add("jmp", None, e_join.block.label)
+            self.use(e_join)
+        else:
+            raw_e = self.coerce(self.expr(node.slice.upper), INT)
+            self.cur.add("mov", stop, raw_e)
+            c_neg = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", c_neg, "lt", stop, zero)
+            b_add = self.new_block("sl_e_add")
+            b_clamp = self.new_block("sl_e_clamp")
+            self.cur.add("br", None, c_neg, b_add.block.label, b_clamp.block.label)
+            self.use(b_add)
+            tmp_e = self.fn.new_vreg(INT)
+            self.cur.add("bin", tmp_e, "add", stop, length)
+            self.cur.add("mov", stop, tmp_e)
+            self.cur.add("jmp", None, b_clamp.block.label)
+            self.use(b_clamp)
+            c_low = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", c_low, "lt", stop, zero)
+            b_low = self.new_block("sl_e_low")
+            b_hi_chk = self.new_block("sl_e_hichk")
+            self.cur.add("br", None, c_low, b_low.block.label, b_hi_chk.block.label)
+            self.use(b_low)
+            self.cur.add("mov", stop, zero)
+            self.cur.add("jmp", None, b_hi_chk.block.label)
+            self.use(b_hi_chk)
+            c_hi = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", c_hi, "gt", stop, length)
+            b_hi = self.new_block("sl_e_hi")
+            b_edone = self.new_block("sl_e_done")
+            self.cur.add("br", None, c_hi, b_hi.block.label, b_edone.block.label)
+            self.use(b_hi)
+            self.cur.add("mov", stop, length)
+            self.cur.add("jmp", None, b_edone.block.label)
+            self.use(b_edone)
+
+        if is_str:
+            out = self.fn.new_vreg(STR, "sl_str")
+            self.cur.add("str", out, self.lw.string_offset(""))
+        else:
+            out = self.call_rt("rt_list_new", [zero], OBJ)
+
+        idx = self.fn.new_vreg(INT, "sl_i")
+        self.cur.add("mov", idx, start)
+        head = self.new_block("sl_head")
+        pos_chk = self.new_block("sl_pos_chk")
+        neg_chk = self.new_block("sl_neg_chk")
+        body = self.new_block("sl_body")
+        done = self.new_block("sl_done")
+        self.cur.add("jmp", None, head.block.label)
+        self.use(head)
+        self.cur.add("br", None, step_neg, neg_chk.block.label, pos_chk.block.label)
+        self.use(pos_chk)
+        c1 = self.fn.new_vreg(BOOL)
+        self.cur.add("cmp", c1, "lt", idx, stop)
+        self.cur.add("br", None, c1, body.block.label, done.block.label)
+        self.use(neg_chk)
+        c2 = self.fn.new_vreg(BOOL)
+        self.cur.add("cmp", c2, "gt", idx, stop)
+        self.cur.add("br", None, c2, body.block.label, done.block.label)
+        self.use(body)
+        if is_str:
+            ch = self.call_rt("rt_str_index", [seq, idx], STR)
+            nxt_s = self.call_rt("rt_str_concat", [out, ch], STR)
+            self.cur.add("mov", out, nxt_s)
+        else:
+            elem = self.call_rt("rt_list_get", [seq, idx], OBJ)
+            self.cur.add("call", None, "rt_list_append", (out, elem))
+        nxt_i = self.fn.new_vreg(INT)
+        self.cur.add("bin", nxt_i, "add", idx, step)
+        self.cur.add("mov", idx, nxt_i)
+        self.cur.add("jmp", None, head.block.label)
+        self.use(done)
+        return out
+
     def emit_func_value(self, qual: str, node: ast.AST) -> VReg:
         info = self.lw.an.funcs.get(qual)
         if info is None:
@@ -1618,6 +1768,50 @@ class FuncBuilder:
         return code
 
     def call(self, node: ast.Call) -> VReg | None:
+        if isinstance(node.func, ast.Name) and node.func.id == "__closure_new":
+            qual = node.args[0].value
+            info = self.lw.an.funcs.get(qual)
+            if info is None:
+                raise UnsupportedError(f"unknown closure function '{qual}'", node)
+            self.lw.wrapped_funcs.add(qual)
+            arity = self.coerce(self.expr(node.args[1]), INT)
+            env_list = self.expr(node.args[2])
+            addr = self.fn.new_vreg(INT, "closure_addr")
+            self.cur.add("addr", addr, "fn_wrap_" + info.name)
+            code = self.fn.new_vreg(OBJ, "closure_val")
+            self.cur.add("call", code, "rt_closure_new", (addr, arity, env_list))
+            return code
+        if isinstance(node.func, ast.Name) and node.func.id == "__attr_set":
+            obj = self.expr(node.args[0])
+            ko = self.box_scalar(self.expr(node.args[1]))
+            vo = self.box_scalar(self.expr(node.args[2]))
+            self.cur.add("call", None, "rt_dict_set", (obj, ko, vo))
+            return None
+        if isinstance(node.func, ast.Name) and node.func.id == "__attr_get":
+            obj = self.expr(node.args[0])
+            ko = self.box_scalar(self.expr(node.args[1]))
+            if len(node.args) > 2:
+                do = self.box_scalar(self.expr(node.args[2]))
+                val = self.call_rt("rt_dict_get_def", [obj, ko, do], OBJ)
+            else:
+                val = self.call_rt("rt_dict_get", [obj, ko], OBJ)
+            self.cur.add("call", None, "rt_decref", (ko,))
+            ty = getattr(node, "_vela_attr_ty", INT)
+            if ty in (INT, FLOAT, BOOL, STR):
+                unbox = {INT: "rt_unbox_int", FLOAT: "rt_unbox_float",
+                         BOOL: "rt_unbox_bool", STR: "rt_unbox_str"}[ty]
+                out = self.fn.new_vreg(ty, "attr_val")
+                self.cur.add("call", out, unbox, (val,))
+                return out
+            return val
+        if isinstance(node.func, ast.Name) and node.func.id == "__global_obj_set":
+            slot = self.coerce(self.expr(node.args[0]), INT)
+            val = self.box_scalar(self.expr(node.args[1]))
+            self.cur.add("call", None, "rt_global_set", (slot, val))
+            return None
+        if isinstance(node.func, ast.Name) and node.func.id == "__global_obj_get":
+            slot = self.coerce(self.expr(node.args[0]), INT)
+            return self.call_rt("rt_global_get", [slot], OBJ)
         if isinstance(node.func, ast.Name) and node.func.id == "__module_func":
             return self.emit_func_value(node.args[0].value, node)
         if isinstance(node.func, ast.Name) and node.func.id == "__modules_registry":
@@ -1727,9 +1921,13 @@ class FuncBuilder:
         if isinstance(node.func, ast.Attribute) and node.func.attr == "append" \
                 and self.lw.boxed:
             obj = self.expr(node.func.value)
-            native = self.coerce(self.expr(node.args[0]), INT)
-            boxed = self.fn.new_vreg(OBJ, "append_val")
-            self.cur.add("call", boxed, "rt_box_int", (native,))
+            val_expr = self.expr(node.args[0])
+            if val_expr is not None and val_expr.ty == STR:
+                boxed = self.box_scalar(val_expr)
+            else:
+                native = self.coerce(val_expr, INT)
+                boxed = self.fn.new_vreg(OBJ, "append_val")
+                self.cur.add("call", boxed, "rt_box_int", (native,))
             self.cur.add("call", None, "rt_list_append", (obj, boxed))
             return None
         name = node.func.id
@@ -1764,11 +1962,79 @@ class FuncBuilder:
             return self.emit_minmax(name == "min", a, b, node)
         if name == "str":
             v = self.expr(node.args[0])
+            if v is None:
+                r = self.fn.new_vreg(STR)
+                self.cur.add("str", r, self.lw.string_offset("None"))
+                return r
             if v.ty == STR:
                 return v
             if v.ty == OBJ:
                 return self.call_rt("rt_num_to_str", [v], STR)
+            if self.lw.boxed and v.ty == INT:
+                big = self.call_rt("rt_bigint_from_int", [v], OBJ)
+                return self.call_rt("rt_num_to_str", [big], STR)
+            if self.lw.boxed and v.ty == FLOAT:
+                return self.call_rt("rt_float_to_str", [v], STR)
+            if self.lw.boxed and v.ty == BOOL:
+                out = self.fn.new_vreg(STR)
+                tb = self.new_block("str_t")
+                fb = self.new_block("str_f")
+                jb = self.new_block("str_j")
+                self.cur.add("br", None, v, tb.block.label, fb.block.label)
+                self.use(tb)
+                self.cur.add("str", out, self.lw.string_offset("True"))
+                self.cur.add("jmp", None, jb.block.label)
+                self.use(fb)
+                self.cur.add("str", out, self.lw.string_offset("False"))
+                self.cur.add("jmp", None, jb.block.label)
+                self.use(jb)
+                return out
             raise UnsupportedError("str() on native int in this profile", node)
+        if self.lw.boxed and name == "sum":
+            seq = self.expr(node.args[0])
+            acc = self.fn.new_vreg(INT, "sum_acc")
+            init_v = self.coerce(self.expr(node.args[1]), INT) if len(node.args) == 2 else self.const_int(0)
+            self.cur.add("mov", acc, init_v)
+            length = self.call_rt("rt_list_len", [seq], INT)
+            idx = self.fn.new_vreg(INT, "sum_i")
+            self.cur.add("mov", idx, self.const_int(0))
+            cond_b = self.new_block("sum_cond")
+            body_b = self.new_block("sum_body")
+            exit_b = self.new_block("sum_exit")
+            self.cur.add("jmp", None, cond_b.block.label)
+            self.use(cond_b)
+            c = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", c, "lt", idx, length)
+            self.cur.add("br", None, c, body_b.block.label, exit_b.block.label)
+            self.use(body_b)
+            elem = self.call_rt("rt_list_get", [seq, idx], OBJ)
+            ev = self.call_rt("rt_unbox_int", [elem], INT)
+            nxt_acc = self.fn.new_vreg(INT)
+            self.cur.add("bin", nxt_acc, "add", acc, ev)
+            self.cur.add("mov", acc, nxt_acc)
+            nxt_i = self.fn.new_vreg(INT)
+            self.cur.add("bin", nxt_i, "add", idx, self.const_int(1))
+            self.cur.add("mov", idx, nxt_i)
+            self.cur.add("jmp", None, cond_b.block.label)
+            self.use(exit_b)
+            return acc
+        if self.lw.boxed and name in ("list", "tuple", "set"):
+            out = self.call_rt("rt_list_new", [self.const_int(0)], OBJ)
+            if node.args:
+                src = self.expr(node.args[0])
+                self.cur.add("call", None, "rt_list_extend", (out, src))
+            if name == "tuple":
+                self.cur.add("call", None, "rt_tuple_type", (out))
+            elif name == "set":
+                self.cur.add("call", None, "rt_set_type", (out,))
+            return out
+        if name in ("ValueError", "TypeError", "StopIteration",
+                    "AttributeError", "KeyError", "IndexError", "Exception"):
+            for a in node.args:
+                self.expr(a)
+            code_val = {"ValueError": 1, "TypeError": 2, "StopIteration": 3,
+                        "AttributeError": 4, "KeyError": 5, "IndexError": 6}.get(name, 1)
+            return self.const_int(code_val)
         if name == "int":
             v = self.expr(node.args[0])
             if v.ty == FLOAT:

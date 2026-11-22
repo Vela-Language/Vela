@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 
+from .desugar import desugar_module
 from .errors import UnsupportedError, VelaCompileError, VelaTypeError
 from .imports import expand_imports
 from .ir import BOOL, FLOAT, INT, NONE, STR, UNKNOWN
@@ -126,18 +127,49 @@ def always_returns(stmts: list[ast.stmt]) -> bool:
 
 
 class _CallRenamer(ast.NodeTransformer):
-    def __init__(self, old: str, new: str, captures: list[str] | None = None) -> None:
+    def __init__(self, old: str, new: str, captures: list[str] | None = None,
+                 explicit_arity: int = 0) -> None:
         self.old = old
         self.new = new
         self.captures = captures or []
+        self.explicit_arity = explicit_arity
 
     def visit_Call(self, node: ast.Call) -> ast.AST:
-        self.generic_visit(node)
+        node.args = [self.visit(a) for a in node.args]
+        node.keywords = [
+            ast.keyword(arg=kw.arg, value=self.visit(kw.value))
+            for kw in node.keywords
+        ]
         if isinstance(node.func, ast.Name) and node.func.id == self.old:
             node.func.id = self.new
             if self.captures:
                 node.args = node.args + [ast.Name(id=c, ctx=ast.Load())
                                          for c in self.captures]
+            return node
+        node.func = self.visit(node.func)
+        return node
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        if isinstance(node.ctx, ast.Load) and node.id == self.old:
+            if not self.captures:
+                return ast.copy_location(
+                    ast.Name(id=self.new, ctx=ast.Load()), node
+                )
+            return ast.copy_location(
+                ast.Call(
+                    func=ast.Name(id="__closure_new", ctx=ast.Load()),
+                    args=[
+                        ast.Constant(value=self.new),
+                        ast.Constant(value=self.explicit_arity),
+                        ast.List(
+                            elts=[ast.Name(id=c, ctx=ast.Load()) for c in self.captures],
+                            ctx=ast.Load(),
+                        ),
+                    ],
+                    keywords=[],
+                ),
+                node,
+            )
         return node
 
 
@@ -274,8 +306,9 @@ def hoist_nested_functions(tree: ast.Module) -> None:
                     if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
             captures = sorted(n for n in used
                               if n in outer_vars and n not in params and n not in assigned)
+            explicit_arity = len(stmt.args.args)
             stmt.args.args.extend(ast.arg(arg=c) for c in captures)
-            renamer = _CallRenamer(stmt.name, qualified, captures)
+            renamer = _CallRenamer(stmt.name, qualified, captures, explicit_arity)
             for inner in fn.body:
                 renamer.visit(inner)
             stmt.name = qualified
@@ -305,6 +338,7 @@ class Analyzer:
     def run(self) -> "Analyzer":
         if self.boxed:
             self.tree = expand_imports(self.tree, self.filename)
+            self.tree = desugar_module(self.tree)
             hoist_nested_functions(self.tree)
         self.const_globals: dict[str, tuple[str, object]] = {}
         counts: dict[str, int] = {}
@@ -366,7 +400,13 @@ class Analyzer:
                 info = FuncInfo(node=node, name=node.name)
                 for arg in all_args:
                     info.params.append(arg.arg)
-                    info.param_ann.append(annotation_type(arg.annotation))
+                    ann = annotation_type(arg.annotation)
+                    if ann is None and (arg.arg.startswith("__cell_")
+                                       or getattr(arg, "_vela_cls_list", False)):
+                        ann = "list"
+                    elif ann is None and getattr(arg, "_vela_cls_dict", False):
+                        ann = "dict"
+                    info.param_ann.append(ann)
                 info.ret_ann = annotation_type(node.returns)
                 info.param_types = list(info.param_ann)
                 info.ret_type = info.ret_ann
@@ -435,7 +475,7 @@ class Analyzer:
                 f"off the end without returning a value", info.node)
         if commit:
             if info.ret_ann is None and info.ret_type is None:
-                info.ret_type = INT if any(t is not None for t in rets) else NONE
+                info.ret_type = INT if (rets and not all(t == NONE for t in rets)) else NONE
             info.var_types = dict(env)
             info.returns = rets
         return old_params != info.param_types or old_ret != info.ret_type
@@ -443,7 +483,7 @@ class Analyzer:
     def _finalize(self, info: FuncInfo) -> None:
         info.param_types = [t if t is not None else INT for t in info.param_types]
         if info.ret_type is None:
-            info.ret_type = INT if any(t is not None for t in info.returns) else NONE
+            info.ret_type = INT if (info.returns and not all(t == NONE for t in info.returns)) else NONE
         info.var_types = {k: (v if v is not None else INT) for k, v in info.var_types.items()}
         for p in info.params:
             info.var_types.setdefault(p, INT)
@@ -486,6 +526,10 @@ class Analyzer:
             target = node.targets[0]
             if self.boxed and isinstance(target, ast.Subscript):
                 base = self._infer(target.value, env, None)
+                if base is None and isinstance(target.value, ast.Name) and target.value.id in env:
+                    env[target.value.id] = "list"
+                    target.value._vela_ty = "list"
+                    base = "list"
                 if base in ("list", "dict"):
                     kt = self._infer(target.slice, env, INT)
                     if base == "dict" and kt not in (INT, STR):
@@ -560,22 +604,21 @@ class Analyzer:
             self._merge_env(env, env, body_env)
             return
         if isinstance(node, ast.Try) and self.boxed:
-            if not node.handlers:
+            if not node.handlers and not node.finalbody:
                 raise UnsupportedError("try without except/finally", node)
             for stmt in node.body:
-                self._stmt(stmt, dict(env), rets, info)
+                self._stmt(stmt, env, rets, info)
             for stmt in node.orelse:
-                self._stmt(stmt, dict(env), rets, info)
+                self._stmt(stmt, env, rets, info)
             for stmt in node.finalbody:
-                self._stmt(stmt, dict(env), rets, info)
+                self._stmt(stmt, env, rets, info)
             for h in node.handlers:
                 if h.type is not None and not isinstance(h.type, ast.Name):
                     raise UnsupportedError("except with a non-name type", node)
-                h_env = dict(env)
                 if h.name:
-                    h_env[h.name] = STR
+                    env[h.name] = STR
                 for stmt in h.body:
-                    self._stmt(stmt, h_env, rets, info)
+                    self._stmt(stmt, env, rets, info)
             return
         if isinstance(node, ast.Assert) and self.boxed:
             self._infer(node.test, env, BOOL)
@@ -585,10 +628,12 @@ class Analyzer:
         if isinstance(node, ast.Raise) and self.boxed:
             exc = node.exc
             if exc is not None:
+                if isinstance(exc, ast.Name):
+                    return
                 if not (isinstance(exc, ast.Call) and isinstance(exc.func, ast.Name)
-                        and len(exc.args) == 1
-                        and isinstance(exc.args[0], ast.Constant)
-                        and isinstance(exc.args[0].value, str)):
+                        and len(exc.args) <= 1
+                        and (not exc.args or (isinstance(exc.args[0], ast.Constant)
+                                              and isinstance(exc.args[0].value, str)))):
                     raise UnsupportedError("raise with a non-literal exception", node)
             return
         if isinstance(node, ast.For):
@@ -606,6 +651,10 @@ class Analyzer:
                 return
             if self.boxed:
                 it_ty = self._infer(node.iter, env, None)
+                if it_ty is None and isinstance(node.iter, ast.Name) and node.iter.id in env:
+                    env[node.iter.id] = "list"
+                    node.iter._vela_ty = "list"
+                    it_ty = "list"
                 if it_ty in ("list", "tuple", "set", "dict", "strlist"):
                     env[node.target.id] = STR if it_ty == "strlist" else INT
                     body_env = dict(env)
@@ -784,11 +833,14 @@ class Analyzer:
             left = node.left
             lt = self._infer(left, env, None)
             for op, comp in zip(node.ops, node.comparators):
-                rt = self._infer(comp, env, lt)
+                rt = self._infer(comp, env, None if isinstance(op, (ast.In, ast.NotIn)) else lt)
                 if lt is None and rt is not None:
-                    lt = rt
-                    self._retro(left, rt, env)
-                if rt is None and lt is not None:
+                    if isinstance(op, (ast.In, ast.NotIn)) and rt in ("list", "tuple", "set", "dict", "strlist", "modules"):
+                        lt = STR if rt in ("strlist", "modules") else INT
+                    else:
+                        lt = rt
+                    self._retro(left, lt, env)
+                if rt is None and lt is not None and not isinstance(op, (ast.In, ast.NotIn)):
                     rt = lt
                     self._retro(comp, lt, env)
                 if self.boxed and (lt == "bigint" or rt == "bigint") \
@@ -797,7 +849,7 @@ class Analyzer:
                     left, lt = comp, rt
                     continue
                 if self.boxed and isinstance(op, (ast.In, ast.NotIn)) \
-                        and rt in ("list", "tuple", "set", "dict", "modules") and lt in (INT, BOOL, STR):
+                        and rt in ("list", "tuple", "set", "dict", "strlist", "modules") and lt in (INT, BOOL, STR):
                     continue
                 if lt is not None and rt is not None:
                     if self.boxed and lt == STR and rt == STR \
@@ -825,7 +877,9 @@ class Analyzer:
             if b is None:
                 b = a
             if a is None:
-                raise VelaTypeError("conditional expression has no usable type", node)
+                return INT
+            self._retro(node.body, a, env)
+            self._retro(node.orelse, b, env)
             if not (assignable(a, b) or assignable(b, a)):
                 raise VelaTypeError(
                     f"conditional expression mixes {a} and {b}", node)
@@ -837,12 +891,14 @@ class Analyzer:
         if isinstance(node, ast.Subscript):
             if self.boxed and isinstance(node.slice, ast.Slice):
                 base = self._infer(node.value, env, None)
-                if base == "str":
+                if base in ("str", "list", "tuple", "strlist"):
                     if node.slice.lower is not None:
                         self._infer(node.slice.lower, env, INT)
                     if node.slice.upper is not None:
                         self._infer(node.slice.upper, env, INT)
-                    return STR
+                    if node.slice.step is not None:
+                        self._infer(node.slice.step, env, INT)
+                    return STR if base == "str" else ("list" if base == "tuple" else base)
             if self.boxed:
                 base = self._infer(node.value, env, None)
                 if base == "str":
@@ -864,32 +920,30 @@ class Analyzer:
         if isinstance(node, ast.Dict):
             if self.boxed:
                 for k, v in zip(node.keys, node.values):
-                    if not (isinstance(k, ast.Constant)
-                            and isinstance(k.value, (int, str))
-                            and isinstance(v, ast.Constant) and isinstance(v.value, int)):
+                    kt = self._infer(k, env, None)
+                    vt = self._infer(v, env, INT)
+                    if kt is not None and kt not in (INT, STR):
+                        raise UnsupportedError(
+                            "dict entries other than int/str keys and int values", node)
+                    if vt is not None and vt not in (INT, BOOL):
                         raise UnsupportedError(
                             "dict entries other than int/str keys and int values", node)
                 return "dict"
             raise UnsupportedError("container literals", node)
         if isinstance(node, ast.Tuple) and self.boxed:
             for item in node.elts:
-                if not isinstance(item, ast.Constant) or not isinstance(item.value, int):
-                    raise UnsupportedError("tuple elements other than int constants", node)
+                self._infer(item, env, INT)
             return "tuple"
         if isinstance(node, ast.Set) and self.boxed:
             for item in node.elts:
-                if not isinstance(item, ast.Constant) or not isinstance(item.value, int):
-                    raise UnsupportedError("set elements other than int constants", node)
+                self._infer(item, env, INT)
             return "set"
         if isinstance(node, (ast.List, ast.Set)):
             if self.boxed and isinstance(node, ast.List):
-                if all(isinstance(i, ast.Constant) and isinstance(i.value, int)
-                       and not isinstance(i.value, bool) for i in node.elts):
-                    return "list"
-                if node.elts and all(isinstance(i, ast.Constant)
-                                     and isinstance(i.value, str) for i in node.elts):
+                elt_tys = [self._infer(i, env, None) for i in node.elts]
+                if elt_tys and all(t == STR for t in elt_tys):
                     return "strlist"
-                raise UnsupportedError("list elements other than int/str constants", node)
+                return "list"
             raise UnsupportedError("container literals", node)
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             raise UnsupportedError("comprehensions", node)
@@ -1044,17 +1098,26 @@ class Analyzer:
             if len(node.args) != 2:
                 raise VelaCompileError("get() takes two arguments", node)
             base = self._infer(node.func.value, env, None)
+            if base is None and isinstance(node.func.value, ast.Name) and node.func.value.id in env:
+                env[node.func.value.id] = "dict"
+                node.func.value._vela_ty = "dict"
+                base = "dict"
             if base == "dict":
-                self._infer(node.args[0], env, INT)
+                self._infer(node.args[0], env, None)
                 self._infer(node.args[1], env, INT)
                 return INT
         if isinstance(node.func, ast.Attribute) and node.func.attr == "append" and self.boxed:
             if len(node.args) != 1:
                 raise VelaCompileError("append() takes exactly one argument", node)
             base = self._infer(node.func.value, env, None)
-            if base == "list":
-                vt = self._infer(node.args[0], env, INT)
-                if vt not in (INT, BOOL):
+            if base in ("list", "strlist"):
+                vt = self._infer(node.args[0], env, STR if base == "strlist" else INT)
+                if vt == STR:
+                    if isinstance(node.func.value, ast.Name):
+                        env[node.func.value.id] = "strlist"
+                        node.func.value._vela_ty = "strlist"
+                    return NONE
+                if vt not in (INT, BOOL, None):
                     raise VelaTypeError(f"append() requires int, got {vt}", node)
                 return NONE
         if not isinstance(node.func, ast.Name):
@@ -1065,6 +1128,42 @@ class Analyzer:
         for a in node.args:
             if isinstance(a, ast.Lambda):
                 raise UnsupportedError("lambda expressions", a)
+        if name == "__closure_new":
+            qual = node.args[0].value
+            arity = node.args[1].value
+            self._infer(node.args[1], env, INT)
+            fn_info = self.funcs.get(qual)
+            if isinstance(node.args[2], ast.List):
+                for j, cap_e in enumerate(node.args[2].elts):
+                    ct = self._infer(cap_e, env, None)
+                    if fn_info is not None and arity + j < len(fn_info.param_types) and ct is not None:
+                        fn_info.param_types[arity + j] = ct
+                node.args[2]._vela_ty = "list"
+                if fn_info is not None:
+                    self._infer_func(fn_info, commit=True)
+                    self._finalize(fn_info)
+            else:
+                self._infer(node.args[2], env, None)
+            ret = fn_info.ret_type if fn_info and fn_info.ret_type else INT
+            return "func*" + ret
+        if name == "__attr_get":
+            self._infer(node.args[0], env, "dict")
+            self._infer(node.args[1], env, STR)
+            if len(node.args) > 2:
+                self._infer(node.args[2], env, None)
+            return getattr(node, "_vela_attr_ty", INT)
+        if name == "__attr_set":
+            self._infer(node.args[0], env, "dict")
+            self._infer(node.args[1], env, STR)
+            self._infer(node.args[2], env, None)
+            return NONE
+        if name == "__global_obj_set":
+            self._infer(node.args[0], env, INT)
+            self._infer(node.args[1], env, None)
+            return NONE
+        if name == "__global_obj_get":
+            self._infer(node.args[0], env, INT)
+            return "dict"
         if name == "__module_func":
             return "func:" + node.args[0].value
         if name == "__modules_registry":
@@ -1130,9 +1229,29 @@ class Analyzer:
             t = self._infer(node.args[0], env, None)
             if t == STR:
                 return STR
-            if self.boxed and t in (INT, "bigint", BOOL):
+            if self.boxed and t in (INT, FLOAT, BOOL, NONE, "bigint"):
                 return STR
             raise VelaTypeError(f"str() does not support {t}", node)
+        if self.boxed and name == "sum":
+            if not 1 <= len(node.args) <= 2:
+                raise VelaCompileError("sum() takes 1 or 2 arguments", node)
+            self._infer(node.args[0], env, None)
+            if len(node.args) == 2:
+                self._infer(node.args[1], env, INT)
+            return INT
+        if self.boxed and name in ("list", "tuple", "set"):
+            if len(node.args) > 1:
+                raise VelaCompileError(f"{name}() takes at most 1 argument", node)
+            if node.args:
+                t = self._infer(node.args[0], env, None)
+                if name == "list" and t == "strlist":
+                    return "strlist"
+            return name
+        if self.boxed and name in ("ValueError", "TypeError", "StopIteration",
+                                   "AttributeError", "KeyError", "IndexError", "Exception"):
+            for a in node.args:
+                self._infer(a, env, None)
+            return INT
         if name in ("int", "float", "bool"):
             if len(node.args) != 1:
                 raise VelaCompileError(f"{name}() takes exactly one argument", node)
@@ -1174,7 +1293,8 @@ class Analyzer:
                         continue
                 elif want is not None and not assignable(t, want):
                     if self.boxed and info.param_ann[i] is None \
-                            and want == INT and t in (STR, FLOAT, BOOL, "bigint"):
+                            and want == INT and t in (STR, FLOAT, BOOL, "bigint",
+                                                      "list", "dict", "tuple", "set", "strlist"):
                         info.param_types[i] = t
                         info.ret_type = info.ret_ann
                         self._infer_func(info, commit=True)

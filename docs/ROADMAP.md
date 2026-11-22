@@ -1,5 +1,6 @@
-# Vela 路线图
+# Vela 早期路线图（v0.1 历史存档）
 
+> **历史存档提示**：本文档为 v0.1 时期的早期路线草案（其中“内嵌 CPython DLL”方案已废止）。**现行定稿路线请以 [V1.0-PLAN.md](V1.0-PLAN.md) 为准，当前唯一能力表请以 [CAPABILITIES.md](CAPABILITIES.md) 为准**。
 > 对标版本：Vela v0.1.0 · 目标平台：Windows x86-64
 
 ## 0. 目标与非目标

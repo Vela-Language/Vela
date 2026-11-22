@@ -24,11 +24,17 @@ jobs:
       - name: Show interpreter
         run: python -c "import sys, platform; print(sys.version); print(platform.machine())"
 
-      - name: Unit + differential regression (44 tests)
+      - name: Unit + acceptance regression (260+ tests)
         run: python -m unittest discover -s tests -v
 
-      - name: Differential corpus vs CPython
+      - name: Differential corpus vs CPython (strict zero-skip gate)
         run: python tests/differential.py
+
+      - name: Random AST differential corpus (800 programs + diversity gate)
+        run: python tests/corpus_scale.py
+
+      - name: CPython pure-Python subset differential gate (200 programs)
+        run: python tests/cpython_subset.py
 
       - name: Build and run native executables
         run: |
@@ -36,5 +42,5 @@ jobs:
           python -m vela build examples/hello.vl -o hello.exe --stats
           .\hello.exe
 
-      - name: Benchmark output verification (no timing gate)
-        run: python bench/run_bench.py --repeat 1
+      - name: Benchmark output + performance timing gate (>=3x per bench, >=8x geomean)
+        run: python bench/run_bench.py --repeat 2 --min-speedup 3.0 --min-geomean 8.0

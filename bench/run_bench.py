@@ -39,6 +39,10 @@ def main() -> int:
     ap.add_argument("--repeat", type=int, default=3)
     ap.add_argument("--json", default=None)
     ap.add_argument("--pattern", default="*.vl")
+    ap.add_argument("--min-speedup", type=float, default=0.0,
+                    help="fail if any benchmark speedup is below this factor")
+    ap.add_argument("--min-geomean", type=float, default=0.0,
+                    help="fail if geometric-mean speedup is below this factor")
     args = ap.parse_args()
 
     paths = sorted(glob.glob(os.path.join(ROOT, "bench", args.pattern)))
@@ -91,6 +95,9 @@ def main() -> int:
             speedup = py_s / nat_s
             print(f"{name:<14}{py_s * 1000:>10.1f}ms{nat_s * 1000:>10.2f}ms"
                   f"{speedup:>9.1f}x{compile_ms:>9.2f}ms{len(result.exe) / 1024:>9.1f}KB")
+            if args.min_speedup > 0 and speedup < args.min_speedup:
+                failures += 1
+                print(f"  FAIL TIMING GATE: {name} speedup {speedup:.2f}x < {args.min_speedup:.2f}x")
             rows.append({
                 "name": name,
                 "cpython_ms": py_s * 1000,
@@ -114,6 +121,9 @@ def main() -> int:
         total_nat = sum(r["vela_ms"] for r in rows)
         print(f"geometric mean speedup: {geo:.1f}x   "
               f"total {total_py:.0f}ms -> {total_nat:.0f}ms")
+        if args.min_geomean > 0 and geo < args.min_geomean:
+            failures += 1
+            print(f"FAIL TIMING GATE: geomean speedup {geo:.2f}x < {args.min_geomean:.2f}x")
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump({"platform": platform.platform(), "python": platform.python_version(),
