@@ -7,7 +7,7 @@
 [![Release](https://github.com/Vela-Language/Vela/actions/workflows/release.yml/badge.svg)](https://github.com/Vela-Language/Vela/actions/workflows/release.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-> v0.5.0 开发中 · Windows x86-64 · Python 语法 · 不依赖 LLVM / 不依赖 CPython 运行时
+> v0.6.0 开发中 · Windows x86-64 · Python 语法 · 不依赖 LLVM / 不依赖 CPython 运行时
 
 Vela 是一个把 Python 源码直接编译成独立 `.exe` 的 AOT 编译器。前端复用宿主 CPython 的
 parser（语法版本 = 宿主解释器版本），中端做单态类型推断与静态检查，后端完全从零实现：
