@@ -88,6 +88,7 @@ class Runtime:
     PRINT_BIGINT = "rt_print_bigint"
     STR_CONCAT = "rt_str_concat"
     STR_EQ = "rt_str_eq"
+    STR_CMP = "rt_str_cmp"
     STR_INDEX = "rt_str_index"
     STR_UPPER = "rt_str_upper"
     STR_LOWER = "rt_str_lower"
@@ -2961,6 +2962,39 @@ class Runtime:
         a.bind("seq_false")
         a.xor_rr("rax", "rax")
         a.ret()
+
+        a.bind(self.STR_CMP)
+        a.mov_rm("r8", "rcx", 0)
+        a.mov_rm("r9", "rdx", 0)
+        a.add_ri("rcx", 8)
+        a.add_ri("rdx", 8)
+        a.bind("scmp_loop")
+        a.test_rr("r8", "r8")
+        a.jcc("e", "scmp_a_done")
+        a.test_rr("r9", "r9")
+        a.jcc("e", "scmp_gt")
+        a.movzx8_rm("r10", "rcx", 0)
+        a.movzx8_rm("r11", "rdx", 0)
+        a.cmp_rr("r10", "r11")
+        a.jcc("b", "scmp_lt")
+        a.jcc("a", "scmp_gt")
+        a.add_ri("rcx", 1)
+        a.add_ri("rdx", 1)
+        a.sub_ri("r8", 1)
+        a.sub_ri("r9", 1)
+        a.jmp("scmp_loop")
+        a.bind("scmp_a_done")
+        a.test_rr("r9", "r9")
+        a.jcc("ne", "scmp_lt")
+        a.xor_rr("rax", "rax")
+        a.ret()
+        a.bind("scmp_lt")
+        a.mov_ri("rax", -1)
+        a.ret()
+        a.bind("scmp_gt")
+        a.mov_ri("rax", 1)
+        a.ret()
+
         a.bind(self.STR_INDEX)
         a.push_r("rbp")
         a.mov_rr("rbp", "rsp")

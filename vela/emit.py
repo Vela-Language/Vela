@@ -517,6 +517,13 @@ class FuncEmitter:
             a.movq_xmm_r(R, "rax")
             if not self._is_reg(dst):
                 self._write_xmm(dst, R)
+        elif op == "fsqrt":
+            used = {self._reg(dst)} if self._is_reg(dst) else set()
+            R = self._reg(dst) if self._is_reg(dst) else next(r for r in SCRATCH_XMM if r not in used)
+            A = self._read_xmm(src, {R})
+            a.sqrtsd(R, A)
+            if not self._is_reg(dst):
+                self._write_xmm(dst, R)
         elif op == "strlen":
             # Python's len(str) counts code points; count UTF-8 lead bytes.
             A = self._read_gpr(src, set())

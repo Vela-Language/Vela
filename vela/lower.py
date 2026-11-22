@@ -1557,6 +1557,13 @@ class FuncBuilder:
             inv = self.fn.new_vreg(BOOL)
             self.cur.add("cmp", inv, "eq", res, z)
             return inv
+        if left.ty == STR and right.ty == STR and isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
+            cv = self.call_rt("rt_str_cmp", [left, right], INT)
+            z = self.const_int(0)
+            cname = {ast.Lt: "lt", ast.LtE: "le", ast.Gt: "gt", ast.GtE: "ge"}[type(op)]
+            r = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", r, cname, cv, z)
+            return r
         if left.ty == FLOAT or right.ty == FLOAT:
             a = self.coerce(left, FLOAT)
             b = self.coerce(right, FLOAT)
@@ -1812,6 +1819,37 @@ class FuncBuilder:
         if isinstance(node.func, ast.Name) and node.func.id == "__global_obj_get":
             slot = self.coerce(self.expr(node.args[0]), INT)
             return self.call_rt("rt_global_get", [slot], OBJ)
+        if isinstance(node.func, ast.Name) and node.func.id == "__math_sqrt":
+            v = self.coerce(self.expr(node.args[0]), FLOAT)
+            r = self.fn.new_vreg(FLOAT, "sqrt_res")
+            self.cur.add("un", r, "fsqrt", v)
+            return r
+        if isinstance(node.func, ast.Name) and node.func.id == "__gc_collect":
+            self.cur.add("call", None, "rt_gc_collect", ())
+            return None
+        if isinstance(node.func, ast.Name) and node.func.id == "__gc_live":
+            return self.call_rt("rt_gc_live", [], INT)
+        if isinstance(node.func, ast.Name) and node.func.id == "__dump_frames":
+            self.cur.add("call", None, "rt_dump_frames", ())
+            return None
+        if isinstance(node.func, ast.Name) and node.func.id == "__sys_getrefcount":
+            v = self.box_scalar(self.expr(node.args[0]))
+            rc = self.call_rt("rt_refcount", [v], INT)
+            out = self.fn.new_vreg(INT, "refcnt")
+            self.cur.add("bin", out, "add", rc, self.const_int(1))
+            return out
+        if isinstance(node.func, ast.Name) and node.func.id in ("__sys_settrace", "__sys_setprofile"):
+            slot = self.const_int(60 if node.func.id == "__sys_settrace" else 61)
+            val = self.expr(node.args[0]) if node.args else None
+            flag = self.const_int(0 if val is None else 1)
+            self.cur.add("call", None, "rt_global_set", (slot, flag))
+            return None
+        if isinstance(node.func, ast.Name) and node.func.id in ("__sys_gettrace", "__sys_getprofile"):
+            slot = self.const_int(60 if node.func.id == "__sys_gettrace" else 61)
+            raw = self.call_rt("rt_global_get", [slot], INT)
+            r = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", r, "ne", raw, self.const_int(0))
+            return r
         if isinstance(node.func, ast.Name) and node.func.id == "__module_func":
             return self.emit_func_value(node.args[0].value, node)
         if isinstance(node.func, ast.Name) and node.func.id == "__modules_registry":

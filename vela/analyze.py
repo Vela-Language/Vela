@@ -848,12 +848,19 @@ class Analyzer:
                                             ast.Gt, ast.GtE)):
                     left, lt = comp, rt
                     continue
-                if self.boxed and isinstance(op, (ast.In, ast.NotIn)) \
-                        and rt in ("list", "tuple", "set", "dict", "strlist", "modules") and lt in (INT, BOOL, STR):
-                    continue
+                if self.boxed and isinstance(op, (ast.In, ast.NotIn)):
+                    if rt is None and isinstance(comp, ast.Name) and comp.id in env:
+                        env[comp.id] = "list"
+                        comp._vela_ty = "list"
+                        rt = "list"
+                    if lt is None:
+                        lt = STR if rt in ("strlist", "modules") else INT
+                        self._retro(left, lt, env)
+                    if rt in ("list", "tuple", "set", "dict", "strlist", "modules") and lt in (INT, BOOL, STR):
+                        continue
                 if lt is not None and rt is not None:
                     if self.boxed and lt == STR and rt == STR \
-                            and isinstance(op, (ast.Eq, ast.NotEq)):
+                            and isinstance(op, (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
                         left, lt = comp, rt
                         continue
                     if self.boxed and is_func_type(lt) and is_func_type(rt) \
@@ -891,6 +898,10 @@ class Analyzer:
         if isinstance(node, ast.Subscript):
             if self.boxed and isinstance(node.slice, ast.Slice):
                 base = self._infer(node.value, env, None)
+                if base is None and isinstance(node.value, ast.Name) and node.value.id in env:
+                    env[node.value.id] = "list"
+                    node.value._vela_ty = "list"
+                    base = "list"
                 if base in ("str", "list", "tuple", "strlist"):
                     if node.slice.lower is not None:
                         self._infer(node.slice.lower, env, INT)
@@ -901,6 +912,10 @@ class Analyzer:
                     return STR if base == "str" else ("list" if base == "tuple" else base)
             if self.boxed:
                 base = self._infer(node.value, env, None)
+                if base is None and isinstance(node.value, ast.Name) and node.value.id in env:
+                    env[node.value.id] = "list"
+                    node.value._vela_ty = "list"
+                    base = "list"
                 if base == "str":
                     self._infer(node.slice, env, INT)
                     return STR
@@ -1164,6 +1179,22 @@ class Analyzer:
         if name == "__global_obj_get":
             self._infer(node.args[0], env, INT)
             return "dict"
+        if name == "__math_sqrt":
+            self._infer(node.args[0], env, FLOAT)
+            return FLOAT
+        if name in ("__gc_collect", "__dump_frames"):
+            return NONE
+        if name == "__gc_live":
+            return INT
+        if name == "__sys_getrefcount":
+            self._infer(node.args[0], env, None)
+            return INT
+        if name in ("__sys_settrace", "__sys_setprofile"):
+            for a in node.args:
+                self._infer(a, env, None)
+            return NONE
+        if name in ("__sys_gettrace", "__sys_getprofile"):
+            return BOOL
         if name == "__module_func":
             return "func:" + node.args[0].value
         if name == "__modules_registry":
@@ -1190,6 +1221,11 @@ class Analyzer:
             if len(node.args) != 1:
                 raise VelaCompileError("len() takes exactly one argument", node)
             t = self._infer(node.args[0], env, None)
+            if self.boxed and t is None and isinstance(node.args[0], ast.Name) \
+                    and node.args[0].id in env:
+                env[node.args[0].id] = "list"
+                node.args[0]._vela_ty = "list"
+                t = "list"
             if self.boxed and t in ("list", "tuple", "set", "dict", "bigint", "strlist", "modules"):
                 return INT
             if t is not None and t != STR:

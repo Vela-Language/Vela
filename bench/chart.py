@@ -21,6 +21,11 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from vela import __version__  # noqa: E402
+
 BENCH = os.path.join(ROOT, "bench")
 DEFAULT_OUT = os.path.join(BENCH, "charts")
 
@@ -232,11 +237,12 @@ def draw_chart(name: str, data: dict, out_path: str, meta: dict) -> None:
 
 def build_index(charts: list[tuple[str, str, str]], out_dir: str, meta: dict,
                 link_prefix: str = "../") -> None:
+    bust = f"?v={html.escape(meta['vela'])}-{html.escape(meta['date'])}"
     cards = []
     for fname, title, desc in charts:
         cards.append(f"""
-      <a class="card" href="{html.escape(fname)}">
-        <img src="{html.escape(fname)}" alt="{html.escape(title)}">
+      <a class="card" href="{html.escape(fname)}{bust}">
+         <img src="{html.escape(fname)}{bust}" alt="{html.escape(title)}">
         <div class="meta"><strong>{html.escape(title)}</strong><span>{html.escape(desc)}</span></div>
       </a>""")
     doc = f"""<!doctype html>
@@ -266,12 +272,12 @@ def build_index(charts: list[tuple[str, str, str]], out_dir: str, meta: dict,
 <body>
   <header>
     <h1>Vela 性能对比</h1>
-    <div class="sub">Vela v0.1.0 · Windows x86-64 · {html.escape(meta['date'])}<br>
+    <div class="sub">Vela {html.escape(meta['vela'])} · Windows x86-64 · {html.escape(meta['date'])}<br>
       同一份 Python 源码，Vela 编译为独立 PE32+；对照 CPython {html.escape(meta['py315'])} /
       {html.escape(meta['py313'])} 与 Cython {html.escape(meta['cython'])}。
       点击任意图片可查看原图；原始数据见
-      <a href="{link_prefix}peers/results-py3.15.json">peer JSON</a>、
-      <a href="{link_prefix}results-py315.json">heavy JSON</a>。</div>
+      <a href="{link_prefix}peers/results-py3.15.json{bust}">peer JSON</a>、
+      <a href="{link_prefix}results-py315.json{bust}">heavy JSON</a>。</div>
   </header>
   <div class="grid">{''.join(cards)}
   </div>
@@ -307,7 +313,7 @@ def main() -> int:
         "py315": "3.15.2",
         "py313": "3.13.3",
         "cython": "3.3.1",
-        "vela": "v0.1.0",
+        "vela": f"v{__version__}",
     }
     charts = []
     order = [k for k in CASES if k in cases] + [k for k in cases if k not in CASES]

@@ -783,6 +783,16 @@ class _CompExtractor(ast.NodeTransformer):
         self.pre_stmts.extend([init, loop])
         return ast.copy_location(ast.Name(id=tmp, ctx=ast.Load()), node)
 
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> ast.AST:
+        self.generic_visit(node)
+        self.pre_stmts.append(
+            ast.Assign(
+                targets=[ast.Name(id=node.target.id, ctx=ast.Store())],
+                value=node.value,
+            )
+        )
+        return ast.copy_location(ast.Name(id=node.target.id, ctx=ast.Load()), node)
+
 
 def _unpack_assign(target: ast.AST, value: ast.expr, counter: _Counter) -> list[ast.stmt]:
     if not isinstance(target, (ast.Tuple, ast.List)):
@@ -859,16 +869,216 @@ def _unpack_assign(target: ast.AST, value: ast.expr, counter: _Counter) -> list[
     return stmts
 
 
-def _desugar_stmt_list(stmts: list[ast.stmt], counter: _Counter) -> list[ast.stmt]:
+def _compile_pattern(
+    pat: ast.pattern, subj: ast.expr, class_fields: dict[str, list[str]]
+) -> tuple[ast.expr, list[ast.stmt]]:
+    if isinstance(pat, ast.MatchValue):
+        return (
+            ast.Compare(left=copy.deepcopy(subj), ops=[ast.Eq()], comparators=[pat.value]),
+            [],
+        )
+    if isinstance(pat, ast.MatchSingleton):
+        if pat.value is None:
+            return (
+                ast.Compare(left=copy.deepcopy(subj), ops=[ast.Eq()], comparators=[ast.Constant(value=0)]),
+                [],
+            )
+        return (
+            ast.Compare(
+                left=copy.deepcopy(subj),
+                ops=[ast.Eq()],
+                comparators=[ast.Constant(value=pat.value)],
+            ),
+            [],
+        )
+    if isinstance(pat, ast.MatchAs):
+        if pat.pattern is None:
+            binds: list[ast.stmt] = []
+            if pat.name is not None:
+                binds.append(
+                    ast.Assign(
+                        targets=[ast.Name(id=pat.name, ctx=ast.Store())],
+                        value=copy.deepcopy(subj),
+                    )
+                )
+            return ast.Constant(value=True), binds
+        cond, binds = _compile_pattern(pat.pattern, subj, class_fields)
+        if pat.name is not None:
+            binds.append(
+                ast.Assign(
+                    targets=[ast.Name(id=pat.name, ctx=ast.Store())],
+                    value=copy.deepcopy(subj),
+                )
+            )
+        return cond, binds
+    if isinstance(pat, ast.MatchOr):
+        sub_conds: list[ast.expr] = []
+        for sub_p in pat.patterns:
+            c, _ = _compile_pattern(sub_p, subj, class_fields)
+            sub_conds.append(c)
+        return ast.BoolOp(op=ast.Or(), values=sub_conds), []
+    if isinstance(pat, ast.MatchSequence):
+        pats = pat.patterns
+        star_idx = next((i for i, p in enumerate(pats) if isinstance(p, ast.MatchStar)), None)
+        len_call = ast.Call(
+            func=ast.Name(id="len", ctx=ast.Load()),
+            args=[copy.deepcopy(subj)],
+            keywords=[],
+        )
+        conds: list[ast.expr] = []
+        binds = []
+        if star_idx is None:
+            conds.append(
+                ast.Compare(left=len_call, ops=[ast.Eq()], comparators=[ast.Constant(value=len(pats))])
+            )
+            for i, sp in enumerate(pats):
+                elem_e = ast.Subscript(
+                    value=copy.deepcopy(subj), slice=ast.Constant(value=i), ctx=ast.Load()
+                )
+                c, b = _compile_pattern(sp, elem_e, class_fields)
+                if not (isinstance(c, ast.Constant) and c.value is True):
+                    conds.append(c)
+                binds.extend(b)
+        else:
+            conds.append(
+                ast.Compare(
+                    left=len_call, ops=[ast.GtE()], comparators=[ast.Constant(value=len(pats) - 1)]
+                )
+            )
+            for i in range(star_idx):
+                elem_e = ast.Subscript(
+                    value=copy.deepcopy(subj), slice=ast.Constant(value=i), ctx=ast.Load()
+                )
+                c, b = _compile_pattern(pats[i], elem_e, class_fields)
+                if not (isinstance(c, ast.Constant) and c.value is True):
+                    conds.append(c)
+                binds.extend(b)
+            suffix_n = len(pats) - star_idx - 1
+            star_pat = pats[star_idx]
+            assert isinstance(star_pat, ast.MatchStar)
+            if star_pat.name is not None:
+                upper_e: ast.expr | None = None
+                if suffix_n > 0:
+                    upper_e = ast.BinOp(
+                        left=copy.deepcopy(len_call),
+                        op=ast.Sub(),
+                        right=ast.Constant(value=suffix_n),
+                    )
+                binds.append(
+                    ast.Assign(
+                        targets=[ast.Name(id=star_pat.name, ctx=ast.Store())],
+                        value=ast.Subscript(
+                            value=copy.deepcopy(subj),
+                            slice=ast.Slice(lower=ast.Constant(value=star_idx), upper=upper_e, step=None),
+                            ctx=ast.Load(),
+                        ),
+                    )
+                )
+            for j in range(suffix_n):
+                elem_e = ast.Subscript(
+                    value=copy.deepcopy(subj),
+                    slice=ast.Constant(value=-(suffix_n - j)),
+                    ctx=ast.Load(),
+                )
+                c, b = _compile_pattern(pats[star_idx + 1 + j], elem_e, class_fields)
+                if not (isinstance(c, ast.Constant) and c.value is True):
+                    conds.append(c)
+                binds.extend(b)
+        full_cond = conds[0] if len(conds) == 1 else ast.BoolOp(op=ast.And(), values=conds)
+        return full_cond, binds
+    if isinstance(pat, ast.MatchMapping):
+        conds = []
+        binds = []
+        for k_expr, v_pat in zip(pat.keys, pat.patterns):
+            conds.append(
+                ast.Compare(left=copy.deepcopy(k_expr), ops=[ast.In()], comparators=[copy.deepcopy(subj)])
+            )
+            val_e = ast.Subscript(
+                value=copy.deepcopy(subj), slice=copy.deepcopy(k_expr), ctx=ast.Load()
+            )
+            c, b = _compile_pattern(v_pat, val_e, class_fields)
+            if not (isinstance(c, ast.Constant) and c.value is True):
+                conds.append(c)
+            binds.extend(b)
+        if not conds:
+            return ast.Constant(value=True), binds
+        full_cond = conds[0] if len(conds) == 1 else ast.BoolOp(op=ast.And(), values=conds)
+        return full_cond, binds
+    if isinstance(pat, ast.MatchClass):
+        cname = pat.cls.id if isinstance(pat.cls, ast.Name) else ""
+        conds = [
+            ast.Call(
+                func=ast.Name(id="isinstance", ctx=ast.Load()),
+                args=[copy.deepcopy(subj), copy.deepcopy(pat.cls)],
+                keywords=[],
+            )
+        ]
+        binds = []
+        pos_attrs = class_fields.get(cname, [])
+        for i, pos_p in enumerate(pat.patterns):
+            attr_name = pos_attrs[i] if i < len(pos_attrs) else f"_{i}"
+            attr_e = ast.Attribute(value=copy.deepcopy(subj), attr=attr_name, ctx=ast.Load())
+            c, b = _compile_pattern(pos_p, attr_e, class_fields)
+            if not (isinstance(c, ast.Constant) and c.value is True):
+                conds.append(c)
+            binds.extend(b)
+        for attr_name, kw_p in zip(pat.kwd_attrs, pat.kwd_patterns):
+            attr_e = ast.Attribute(value=copy.deepcopy(subj), attr=attr_name, ctx=ast.Load())
+            c, b = _compile_pattern(kw_p, attr_e, class_fields)
+            if not (isinstance(c, ast.Constant) and c.value is True):
+                conds.append(c)
+            binds.extend(b)
+        full_cond = conds[0] if len(conds) == 1 else ast.BoolOp(op=ast.And(), values=conds)
+        return full_cond, binds
+    return ast.Constant(value=True), []
+
+
+def _desugar_stmt_list(
+    stmts: list[ast.stmt], counter: _Counter, class_fields: dict[str, list[str]] | None = None
+) -> list[ast.stmt]:
+    cfields = class_fields or {}
     out: list[ast.stmt] = []
     for s in stmts:
         if isinstance(s, ast.FunctionDef):
-            s.body = _desugar_stmt_list(s.body, counter)
+            s.body = _desugar_stmt_list(s.body, counter, cfields)
             out.append(s)
             continue
         if isinstance(s, ast.ClassDef):
-            s.body = _desugar_stmt_list(s.body, counter)
+            s.body = _desugar_stmt_list(s.body, counter, cfields)
             out.append(s)
+            continue
+        if isinstance(s, ast.Match):
+            subj_var = counter.next("__msubj")
+            done_var = counter.next("__mdone")
+            match_stmts: list[ast.stmt] = [
+                ast.Assign(targets=[ast.Name(id=subj_var, ctx=ast.Store())], value=s.subject),
+                ast.Assign(targets=[ast.Name(id=done_var, ctx=ast.Store())], value=ast.Constant(value=0)),
+            ]
+            subj_ref = ast.Name(id=subj_var, ctx=ast.Load())
+            for case in s.cases:
+                pcond, pbinds = _compile_pattern(case.pattern, subj_ref, cfields)
+                not_done = ast.Compare(
+                    left=ast.Name(id=done_var, ctx=ast.Load()),
+                    ops=[ast.Eq()],
+                    comparators=[ast.Constant(value=0)],
+                )
+                if isinstance(pcond, ast.Constant) and pcond.value is True:
+                    outer_test: ast.expr = not_done
+                else:
+                    outer_test = ast.BoolOp(op=ast.And(), values=[not_done, pcond])
+                mark_done = ast.Assign(
+                    targets=[ast.Name(id=done_var, ctx=ast.Store())],
+                    value=ast.Constant(value=1),
+                )
+                case_exec = [mark_done] + list(case.body)
+                if case.guard is not None:
+                    inner_body = pbinds + [ast.If(test=case.guard, body=case_exec, orelse=[])]
+                else:
+                    inner_body = pbinds + case_exec
+                match_stmts.append(ast.If(test=outer_test, body=inner_body, orelse=[]))
+            if s.cases and s.cases[-1].body and isinstance(s.cases[-1].body[-1], ast.Return):
+                match_stmts.append(ast.Return(value=ast.Constant(value=0)))
+            out.extend(_desugar_stmt_list(match_stmts, counter, cfields))
             continue
         if isinstance(s, ast.With):
             cur_body = _desugar_stmt_list(s.body, counter)
@@ -1052,6 +1262,8 @@ def _infer_expr_rough_type(node: ast.expr, env: dict[str, str],
             return "float"
         if fname == "bool":
             return "bool"
+        if fname in ("list", "tuple", "set", "dict"):
+            return fname
     if isinstance(node, ast.BinOp):
         lt = _infer_expr_rough_type(node.left, env, classes)
         rt = _infer_expr_rough_type(node.right, env, classes)
@@ -1160,7 +1372,10 @@ def _desugar_classes(tree: ast.Module, counter: _Counter) -> None:
                         t = sub.targets[0]
                         if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) \
                                 and t.value.id == "self":
-                            fty = _infer_expr_rough_type(sub.value, penv, classes)
+                            if t.attr in ("target", "fn", "callback"):
+                                fty = "func"
+                            else:
+                                fty = _infer_expr_rough_type(sub.value, penv, classes)
                             meta.field_types.setdefault(t.attr, fty)
                         elif isinstance(t, ast.Name):
                             penv[t.id] = _infer_expr_rough_type(sub.value, penv, classes)
@@ -1292,7 +1507,6 @@ def _desugar_classes(tree: ast.Module, counter: _Counter) -> None:
                 attr in classes[self.current_cls].field_types
                 or resolve_prop_get(self.current_cls, attr) is not None
                 or resolve_descriptor(self.current_cls, attr) is not None
-                or resolve_method(self.current_cls, attr) is not None
             ):
                 return self.current_cls
             for cname, meta in classes.items():
@@ -1678,6 +1892,13 @@ def _desugar_classes(tree: ast.Module, counter: _Counter) -> None:
                             ),
                             node,
                         )
+                node.func.value = self.visit(node.func.value)
+                node.args = [self.visit(a) for a in node.args]
+                node.keywords = [
+                    ast.keyword(arg=kw.arg, value=self.visit(kw.value))
+                    for kw in node.keywords
+                ]
+                return node
             return self.generic_visit(node)
 
         def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
@@ -2351,18 +2572,474 @@ def _desugar_signatures_and_calls(tree: ast.Module) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 7. Modern Syntax (Python 3.10-3.15), @dataclass, eval/exec/compile, unittest
+# ---------------------------------------------------------------------------
+
+def _collect_class_pos_fields(tree: ast.Module) -> dict[str, list[str]]:
+    fields_map: dict[str, list[str]] = {}
+    for s in tree.body:
+        if isinstance(s, ast.ClassDef):
+            fnames: list[str] = []
+            for item in s.body:
+                if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                    if item.target.id not in fnames:
+                        fnames.append(item.target.id)
+                elif isinstance(item, ast.FunctionDef) and item.name == "__init__":
+                    for a in item.args.args[1:]:
+                        if a.arg not in fnames:
+                            fnames.append(a.arg)
+            fields_map[s.name] = fnames
+    return fields_map
+
+
+class _ModernSyntaxPreDesugarer(ast.NodeTransformer):
+    def __init__(self, known_classes: set[str], counter: _Counter) -> None:
+        self.known_classes = known_classes
+        self.counter = counter
+        self.const_strs: dict[str, str] = {}
+        self.generic_funcs: dict[str, ast.FunctionDef] = {}
+        self.specialized_funcs: list[ast.FunctionDef] = []
+
+    def _clean_ann(self, ann: ast.AST | None) -> ast.expr | None:
+        if ann is None:
+            return None
+        if isinstance(ann, ast.Name) and (
+            ann.id in ("int", "float", "bool", "str", "None")
+            or ann.id in self.known_classes
+        ):
+            return ann
+        if isinstance(ann, ast.Constant) and ann.value is None:
+            return ann
+        return None
+
+    def visit_TemplateStr(self, node: ast.AST) -> ast.AST:
+        # PEP 750 t-string (Python 3.14/3.15)
+        self.generic_visit(node)
+        parts: list[ast.expr] = []
+        for v in getattr(node, "values", []):
+            if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                if v.value:
+                    parts.append(v)
+            else:
+                inner = getattr(v, "value", v)
+                parts.append(
+                    ast.Call(
+                        func=ast.Name(id="str", ctx=ast.Load()),
+                        args=[inner],
+                        keywords=[],
+                    )
+                )
+        if not parts:
+            return ast.Constant(value="")
+        acc = parts[0]
+        for p in parts[1:]:
+            acc = ast.BinOp(left=acc, op=ast.Add(), right=p)
+        return acc
+
+    def visit_TypeAlias(self, node: ast.AST) -> ast.AST:
+        return ast.Pass()
+
+    def visit_Delete(self, node: ast.Delete) -> ast.AST:
+        for t in node.targets:
+            if isinstance(t, ast.Subscript):
+                return ast.Expr(
+                    value=ast.Call(
+                        func=ast.Attribute(value=t.value, attr="pop", ctx=ast.Load()),
+                        args=[t.slice],
+                        keywords=[],
+                    )
+                )
+        return ast.Pass()
+
+    def visit_Await(self, node: ast.Await) -> ast.AST:
+        return self.visit(node.value)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> ast.AST:
+        f = ast.For(
+            target=self.visit(node.target),
+            iter=self.visit(node.iter),
+            body=[self.visit(s) for s in node.body],
+            orelse=[self.visit(s) for s in node.orelse],
+        )
+        return ast.copy_location(f, node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> ast.AST:
+        w = ast.With(
+            items=[
+                ast.withitem(
+                    context_expr=self.visit(it.context_expr),
+                    optional_vars=self.visit(it.optional_vars) if it.optional_vars else None,
+                )
+                for it in node.items
+            ],
+            body=[self.visit(s) for s in node.body],
+        )
+        return ast.copy_location(w, node)
+
+    def visit_TryStar(self, node: ast.AST) -> ast.AST:
+        t = ast.Try(
+            body=[self.visit(s) for s in getattr(node, "body", [])],
+            handlers=[self.visit(h) for h in getattr(node, "handlers", [])],
+            orelse=[self.visit(s) for s in getattr(node, "orelse", [])],
+            finalbody=[self.visit(s) for s in getattr(node, "finalbody", [])],
+        )
+        return ast.copy_location(t, node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+        fn = ast.FunctionDef(
+            name=node.name,
+            args=node.args,
+            body=node.body,
+            decorator_list=node.decorator_list,
+            returns=node.returns,
+        )
+        return self.visit_FunctionDef(ast.copy_location(fn, node))
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        was_generic = bool(getattr(node, "type_params", None))
+        if hasattr(node, "type_params"):
+            node.type_params = []  # type: ignore[attr-defined]
+        for a in list(node.args.posonlyargs) + list(node.args.args) + list(node.args.kwonlyargs):
+            a.annotation = self._clean_ann(a.annotation)
+        if node.args.vararg:
+            node.args.vararg.annotation = None
+        if node.args.kwarg:
+            node.args.kwarg.annotation = None
+        node.returns = self._clean_ann(node.returns)
+        if was_generic:
+            self.generic_funcs[node.name] = copy.deepcopy(node)
+        # Filter out @lru_cache / @cache decorators
+        cleaned_decs: list[ast.expr] = []
+        for d in node.decorator_list:
+            dname = ""
+            if isinstance(d, ast.Name):
+                dname = d.id
+            elif isinstance(d, ast.Attribute):
+                dname = d.attr
+            elif isinstance(d, ast.Call):
+                if isinstance(d.func, ast.Name):
+                    dname = d.func.id
+                elif isinstance(d.func, ast.Attribute):
+                    dname = d.func.attr
+            if dname in ("lru_cache", "cache", "functools__lru_cache", "functools__cache"):
+                continue
+            cleaned_decs.append(self.visit(d))
+        node.decorator_list = cleaned_decs
+        new_body: list[ast.stmt] = []
+        for s in node.body:
+            v = self.visit(s)
+            if isinstance(v, list):
+                new_body.extend(v)
+            elif v is not None:
+                new_body.append(v)
+        node.body = new_body
+        return node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+        if hasattr(node, "type_params"):
+            node.type_params = []  # type: ignore[attr-defined]
+        # Strip Generic[T] from bases
+        node.bases = [
+            b for b in node.bases
+            if not (isinstance(b, ast.Subscript) or (isinstance(b, ast.Name) and b.id in ("Generic", "typing__Generic")))
+        ]
+        is_dc = False
+        kept_decs: list[ast.expr] = []
+        for d in node.decorator_list:
+            dname = ""
+            if isinstance(d, ast.Name):
+                dname = d.id
+            elif isinstance(d, ast.Attribute):
+                dname = d.attr
+            elif isinstance(d, ast.Call):
+                if isinstance(d.func, ast.Name):
+                    dname = d.func.id
+                elif isinstance(d.func, ast.Attribute):
+                    dname = d.func.attr
+            if dname in ("dataclass", "dataclasses__dataclass"):
+                is_dc = True
+            else:
+                kept_decs.append(self.visit(d))
+        node.decorator_list = kept_decs
+
+        dc_fields: list[tuple[str, ast.expr | None, ast.expr | None]] = []
+        new_body: list[ast.stmt] = []
+        existing_methods: set[str] = set()
+        for item in node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if item.name == "__aenter__":
+                    item.name = "__enter__"
+                elif item.name == "__aexit__":
+                    item.name = "__exit__"
+                elif item.name == "__aiter__":
+                    item.name = "__iter__"
+                elif item.name == "__anext__":
+                    item.name = "__next__"
+                existing_methods.add(item.name)
+            if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                dc_fields.append((item.target.id, self._clean_ann(item.annotation), item.value))
+                if item.value is not None and not is_dc:
+                    new_body.append(
+                        ast.Assign(targets=[item.target], value=self.visit(item.value))
+                    )
+                continue
+            visited = self.visit(item)
+            if isinstance(visited, list):
+                new_body.extend(visited)
+            elif visited is not None:
+                new_body.append(visited)
+
+        if is_dc and dc_fields:
+            if "__init__" not in existing_methods:
+                init_args = [ast.arg(arg="self")]
+                defaults: list[ast.expr] = []
+                init_stmts: list[ast.stmt] = []
+                for fname, fann, fdef in dc_fields:
+                    init_args.append(ast.arg(arg=fname, annotation=fann))
+                    if fdef is not None:
+                        defaults.append(copy.deepcopy(fdef))
+                    init_stmts.append(
+                        ast.Assign(
+                            targets=[
+                                ast.Attribute(
+                                    value=ast.Name(id="self", ctx=ast.Load()),
+                                    attr=fname,
+                                    ctx=ast.Store(),
+                                )
+                            ],
+                            value=ast.Name(id=fname, ctx=ast.Load()),
+                        )
+                    )
+                new_body.insert(
+                    0,
+                    ast.FunctionDef(
+                        name="__init__",
+                        args=ast.arguments(
+                            posonlyargs=[],
+                            args=init_args,
+                            kwonlyargs=[],
+                            kw_defaults=[],
+                            defaults=defaults,
+                        ),
+                        body=init_stmts,
+                        decorator_list=[],
+                    ),
+                )
+            if "__eq__" not in existing_methods:
+                cmps: list[ast.expr] = [
+                    ast.Compare(
+                        left=ast.Attribute(value=ast.Name(id="self", ctx=ast.Load()), attr=fn, ctx=ast.Load()),
+                        ops=[ast.Eq()],
+                        comparators=[
+                            ast.Attribute(value=ast.Name(id="other", ctx=ast.Load()), attr=fn, ctx=ast.Load())
+                        ],
+                    )
+                    for fn, _, _ in dc_fields
+                ]
+                eq_expr = cmps[0] if len(cmps) == 1 else ast.BoolOp(op=ast.And(), values=cmps)
+                new_body.append(
+                    ast.FunctionDef(
+                        name="__eq__",
+                        args=ast.arguments(
+                            posonlyargs=[],
+                            args=[ast.arg(arg="self"), ast.arg(arg="other")],
+                            kwonlyargs=[],
+                            kw_defaults=[],
+                            defaults=[],
+                        ),
+                        body=[ast.Return(value=eq_expr)],
+                        decorator_list=[],
+                    )
+                )
+        if not new_body:
+            new_body.append(ast.Pass())
+        node.body = new_body
+        return node
+
+    def visit_Assign(self, node: ast.Assign) -> ast.AST:
+        node.value = self.visit(node.value)
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                self.const_strs[node.targets[0].id] = node.value.value
+        return node
+
+    def visit_Expr(self, node: ast.Expr) -> ast.AST:
+        if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) \
+                and node.value.func.id == "exec" and len(node.value.args) >= 1:
+            arg0 = self.visit(node.value.args[0])
+            code_str: str | None = None
+            if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+                code_str = arg0.value
+            elif isinstance(arg0, ast.Name) and arg0.id in self.const_strs:
+                code_str = self.const_strs[arg0.id]
+            if code_str is not None:
+                parsed = ast.parse(code_str, mode="exec")
+                return [self.visit(s) for s in parsed.body]  # type: ignore[return-value]
+        return self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        self.generic_visit(node)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "cast" \
+                and len(node.args) == 2:
+            return node.args[1]
+        if isinstance(node.func, ast.Name):
+            if node.func.id in ("cast", "typing__cast") and len(node.args) == 2:
+                return node.args[1]
+            if node.func.id in self.generic_funcs:
+                tmpl = copy.deepcopy(self.generic_funcs[node.func.id])
+                spec_name = self.counter.next(f"__gspec_{node.func.id}")
+                tmpl.name = spec_name
+                self.specialized_funcs.append(tmpl)
+                node.func = ast.Name(id=spec_name, ctx=ast.Load())
+                return node
+            if node.func.id == "compile" and len(node.args) >= 1:
+                return node.args[0]
+            if node.func.id == "eval" and len(node.args) >= 1:
+                arg0 = node.args[0]
+                code_str: str | None = None
+                if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+                    code_str = arg0.value
+                elif isinstance(arg0, ast.Name) and arg0.id in self.const_strs:
+                    code_str = self.const_strs[arg0.id]
+                if code_str is not None:
+                    parsed = ast.parse(code_str, mode="eval")
+                    return self.visit(parsed.body)
+        return node
+
+
+def _expand_unittest_main(tree: ast.Module) -> None:
+    test_classes: list[tuple[str, list[str], bool, bool]] = []
+    for s in tree.body:
+        if isinstance(s, ast.ClassDef):
+            is_tc = any(
+                (isinstance(b, ast.Name) and b.id in ("TestCase", "unittest__TestCase"))
+                or (isinstance(b, ast.Attribute) and b.attr == "TestCase")
+                for b in s.bases
+            )
+            if is_tc:
+                mnames = [
+                    m.name for m in s.body
+                    if isinstance(m, ast.FunctionDef) and m.name.startswith("test_")
+                ]
+                has_setup = any(
+                    isinstance(m, ast.FunctionDef) and m.name == "setUp" for m in s.body
+                )
+                has_teardown = any(
+                    isinstance(m, ast.FunctionDef) and m.name == "tearDown" for m in s.body
+                )
+                test_classes.append((s.name, mnames, has_setup, has_teardown))
+    if not test_classes:
+        return
+
+    def is_ut_main_call(stmt: ast.stmt) -> bool:
+        if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
+            return False
+        f = stmt.value.func
+        if isinstance(f, ast.Attribute) and f.attr == "main":
+            return True
+        if isinstance(f, ast.Name) and f.id in ("unittest__main", "main"):
+            return True
+        return False
+
+    runner_stmts: list[ast.stmt] = []
+    total_tests = 0
+    for cname, mnames, has_setup, has_teardown in test_classes:
+        inst_var = f"__ut_{cname}"
+        runner_stmts.append(
+            ast.Assign(
+                targets=[ast.Name(id=inst_var, ctx=ast.Store())],
+                value=ast.Call(func=ast.Name(id=cname, ctx=ast.Load()), args=[], keywords=[]),
+            )
+        )
+        for m in mnames:
+            total_tests += 1
+            if has_setup:
+                runner_stmts.append(
+                    ast.Expr(
+                        value=ast.Call(
+                            func=ast.Attribute(
+                                value=ast.Name(id=inst_var, ctx=ast.Load()),
+                                attr="setUp",
+                                ctx=ast.Load(),
+                            ),
+                            args=[],
+                            keywords=[],
+                        )
+                    )
+                )
+            runner_stmts.append(
+                ast.Expr(
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Name(id=inst_var, ctx=ast.Load()),
+                            attr=m,
+                            ctx=ast.Load(),
+                        ),
+                        args=[],
+                        keywords=[],
+                    )
+                )
+            )
+            if has_teardown:
+                runner_stmts.append(
+                    ast.Expr(
+                        value=ast.Call(
+                            func=ast.Attribute(
+                                value=ast.Name(id=inst_var, ctx=ast.Load()),
+                                attr="tearDown",
+                                ctx=ast.Load(),
+                            ),
+                            args=[],
+                            keywords=[],
+                        )
+                    )
+                )
+    runner_stmts.append(
+        ast.Expr(
+            value=ast.Call(
+                func=ast.Name(id="print", ctx=ast.Load()),
+                args=[ast.Constant(value=f"OK ({total_tests} tests)")],
+                keywords=[],
+            )
+        )
+    )
+
+    new_body: list[ast.stmt] = []
+    for s in tree.body:
+        if is_ut_main_call(s):
+            new_body.extend(runner_stmts)
+        elif isinstance(s, ast.If) and any(is_ut_main_call(b) for b in s.body):
+            new_body.extend(runner_stmts)
+        else:
+            new_body.append(s)
+    tree.body = new_body
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def desugar_module(tree: ast.Module) -> ast.Module:
     counter = _Counter()
+    known_cls = {s.name for s in tree.body if isinstance(s, ast.ClassDef)}
+    pre = _ModernSyntaxPreDesugarer(known_cls, counter)
+    flat_body: list[ast.stmt] = []
+    for s in tree.body:
+        v = pre.visit(s)
+        if isinstance(v, list):
+            flat_body.extend(v)
+        elif v is not None:
+            flat_body.append(v)
+    tree.body = list(pre.specialized_funcs) + flat_body
+    _expand_unittest_main(tree)
     _FStringDesugarer().visit(tree)
     _LambdaDesugarer(counter).visit(tree)
     _desugar_generators(tree, counter)
-    tree.body = _desugar_stmt_list(tree.body, counter)
+    cfields = _collect_class_pos_fields(tree)
+    tree.body = _desugar_stmt_list(tree.body, counter, cfields)
     _desugar_classes(tree, counter)
     _desugar_decorators(tree, counter)
-    tree.body = _desugar_stmt_list(tree.body, counter)
+    tree.body = _desugar_stmt_list(tree.body, counter, cfields)
     _desugar_signatures_and_calls(tree)
     ast.fix_missing_locations(tree)
     return tree

@@ -26,7 +26,7 @@ INT_MAX = 2 ** 63 - 1
 # Pure: no observable side effects, cannot trap with the current runtime.
 PURE_OPS = {"const", "str", "mov", "cmp", "arg"}
 PURE_BIN = {"and", "or", "xor", "shl", "shr", "fadd", "fsub", "fmul", "fdiv"}
-PURE_UN = {"i2f", "f2i", "fabs", "bool", "fneg", "strlen"}
+PURE_UN = {"i2f", "f2i", "fabs", "fsqrt", "bool", "fneg", "strlen"}
 
 
 def _is_pure(ins: Instr) -> bool:
