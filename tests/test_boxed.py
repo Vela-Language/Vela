@@ -1068,6 +1068,97 @@ class BoxedTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
         self.assertIn(b"4 2", p.stdout)
 
+    def test_boxed_sys_modules_func_pass_return_dyncall(self):
+        mod = os.path.join(TMPDIR, "ops_sys.vl")
+        with open(mod, "w", encoding="utf-8") as f:
+            f.write("def inc(x):\n    return x + 1\ndef dbl(x):\n    return x * 2\n")
+        src = os.path.join(TMPDIR, "dyncall_sys.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write(
+                "import ops_sys\nimport sys\n"
+                "def pick(flag: int):\n"
+                "    if flag == 1:\n"
+                "        return sys.modules[\"ops_sys\"].inc\n"
+                "    return sys.modules[\"ops_sys\"].dbl\n"
+                "def run_fn(f, v):\n"
+                "    return f(v)\n"
+                "f1 = pick(1)\n"
+                "f2 = pick(0)\n"
+                "print(run_fn(f1, 10), run_fn(f2, 10))\n"
+            )
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"11 20", p.stdout)
+
+    def test_boxed_dynamic_call_four_plus_args(self):
+        src = os.path.join(TMPDIR, "dyncall_5args.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write(
+                "def sum5(a, b, c, d, e):\n"
+                "    return a + b + c + d + e\n"
+                "def alt5(a, b, c, d, e):\n"
+                "    return a * 10 + b + c + d + e\n"
+                "def invoke5(f, a, b, c, d, e):\n"
+                "    return f(a, b, c, d, e)\n"
+                "print(invoke5(sum5, 1, 2, 3, 4, 5), invoke5(alt5, 1, 2, 3, 4, 5))\n"
+            )
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"15 24", p.stdout)
+
+    def test_boxed_dynamic_call_return_types(self):
+        src = os.path.join(TMPDIR, "dyncall_rettypes.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write(
+                "def s1(x: str) -> str:\n    return x + \"!\"\n"
+                "def s2(x: str) -> str:\n    return \"[\" + x + \"]\"\n"
+                "def apply_s(f, x):\n    return f(x)\n"
+                "def f1(x: float) -> float:\n    return x + 0.5\n"
+                "def f2(x: float) -> float:\n    return x * 2.0\n"
+                "def apply_f(f, x: float) -> float:\n    return f(x)\n"
+                "def b1(x: int) -> bool:\n    return x > 0\n"
+                "def b2(x: int) -> bool:\n    return x < 0\n"
+                "def apply_b(f, x):\n    return f(x)\n"
+                "def z1() -> int:\n    return 7\n"
+                "def z2() -> int:\n    return 9\n"
+                "def apply0(f):\n    return f()\n"
+                "print(apply_s(s1, \"hi\"), apply_s(s2, \"hi\"), "
+                "apply_f(f1, 1.0), apply_f(f2, 1.5), "
+                "apply_b(b1, 3), apply_b(b2, 3), "
+                "apply0(z1), apply0(z2))\n"
+            )
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"hi! [hi] 1.5 3.0 True False 7 9", p.stdout)
+
+    def test_boxed_shared_code_object_identity(self):
+        mod = os.path.join(TMPDIR, "ops_id.vl")
+        with open(mod, "w", encoding="utf-8") as f:
+            f.write("def inc(x):\n    return x + 1\ndef dec(x):\n    return x - 1\n")
+        src = os.path.join(TMPDIR, "code_id.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write(
+                "import ops_id\nimport sys\n"
+                "def local_fn(x):\n    return x + 2\n"
+                "a = ops_id.inc\n"
+                "b = sys.modules[\"ops_id\"].inc\n"
+                "c = ops_id.dec\n"
+                "l1 = local_fn\n"
+                "l2 = local_fn\n"
+                "print(a == b, a is b, a != c, l1 is l2, a is l1)\n"
+            )
+        p = vela("run", "--boxed", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"True True True True False", p.stdout)
+
+    def test_boxed_gc_conservative_flag(self):
+        src = os.path.join(TMPDIR, "gc_cons.vl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("xs = [1, 2, 3]\nxs.append(4)\nprint(len(xs), xs[3])\n")
+        p = vela("run", "--boxed", "--gc-conservative", src)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"4 4", p.stdout)
+
     def test_default_print_unchanged(self):
         src = os.path.join(TMPDIR, "boxed_default.vl")
         with open(src, "w", encoding="utf-8") as f:

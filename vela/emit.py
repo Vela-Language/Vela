@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import struct
 
-from .ir import BOOL, FLOAT, INT, NONE, STR, VReg
+from .ir import BOOL, FLOAT, INT, NONE, OBJ, STR, VReg
 from .pe import align_up
 from .regalloc import _uses
 from .x64 import Asm, GPR_POOL, XMM_POOL
@@ -37,6 +37,12 @@ class FuncEmitter:
         self.gpr_save: dict[str, int] = {}
         self.xmm_save: dict[str, int] = {}
         self.slot_disp: dict[int, int] = {}
+        self.obj_vregs: list[VReg] = []
+        self.obj_slot_disp: dict[VReg, int] = {}
+        self.has_gc_frame = False
+        self.gc_frame_disp = 0
+        self.obj_slots_base_disp = 0
+        self.cur_block_label = ""
         self.frame = 0
         self.has_calls = any(ins.op in ("call", "print")
                              for block in fn.blocks for ins in block.instrs)
@@ -54,11 +60,17 @@ class FuncEmitter:
         used_xmm = [r for r in XMM_POOL if r in set(self.alloc.regs.values())]
         self.used_gpr = used_gpr
         self.used_xmm = used_xmm
+        self.obj_vregs = sorted(
+            (v for v in self.alloc.intervals if v.ty == OBJ),
+            key=lambda v: v.id,
+        )[:64]
+        self.has_gc_frame = bool(self.has_calls and self.obj_vregs)
         # A function with no calls, no spills and no XMM callee-saves needs no
         # frame pointer and no shadow space: push/pop the used GPRs directly.
         self.leaf_fast = (not self.has_calls
                           and self.alloc.slot_count == 0
-                          and not used_xmm)
+                          and not used_xmm
+                          and len(self.fn.params) <= 4)
         if self.leaf_fast:
             self.frame = 0
             return
@@ -72,7 +84,20 @@ class FuncEmitter:
         for i in range(self.alloc.slot_count):
             off += 8
             self.slot_disp[i] = -off
-        shadow = 32 if self.has_calls else 0
+        if self.has_gc_frame:
+            off += 32
+            self.gc_frame_disp = -off
+            off += len(self.obj_vregs) * 8
+            self.obj_slots_base_disp = -off
+            for j, v in enumerate(self.obj_vregs):
+                self.obj_slot_disp[v] = self.obj_slots_base_disp + j * 8
+        max_call_args = max(
+            (len(ins.args[1]) for block in self.fn.blocks
+             for ins in block.instrs if ins.op == "call"),
+            default=0,
+        )
+        stack_args = max(0, max_call_args - 4) * 8
+        shadow = (32 + stack_args) if self.has_calls else 0
         self.frame = align_up(off + shadow, 16)
 
     def _disp(self, v: VReg) -> int:
@@ -101,6 +126,30 @@ class FuncEmitter:
                 self.a.mov_rr(dst, reg)
         else:
             self.a.mov_mr("rbp", self._disp(v), reg)
+        if v in self.obj_slot_disp:
+            self.a.mov_mr("rbp", self.obj_slot_disp[v], reg)
+
+    def _safepoint_bitmap(self, ins) -> int:
+        if not self.has_gc_frame:
+            return 0
+        p = self.alloc.ins_pos.get(id(ins), -1)
+        live_in = self.alloc.live_in.get(self.cur_block_label, set())
+        mask = 0
+        for j, v in enumerate(self.obj_vregs):
+            iv = self.alloc.intervals.get(v)
+            if iv is None:
+                continue
+            start, end = iv[0], iv[1]
+            if (start < p < end) or (start == p < end and v in live_in):
+                mask |= 1 << j
+        return mask
+
+    def _update_safepoint(self, ins) -> None:
+        if not self.has_gc_frame:
+            return
+        mask = self._safepoint_bitmap(ins)
+        self.a.mov_ri("r11", mask)
+        self.a.mov_mr("rbp", self.gc_frame_disp + 16, "r11")
 
     def _read_xmm(self, v: VReg, avoid: set[str]) -> str:
         if v in self.alloc.regs:
@@ -162,7 +211,21 @@ class FuncEmitter:
                 a.mov_mr("rbp", disp, reg)
             for reg, disp in self.xmm_save.items():
                 a.mov_mr_xmm("rbp", disp, reg)
+            if self.has_gc_frame:
+                a.xor_rr("rax", "rax")
+                for j in range(len(self.obj_vregs)):
+                    a.mov_mr("rbp", self.obj_slots_base_disp + j * 8, "rax")
+                a.mov_abs64("r11", ("data", self.rt.gc_frame_top_off))
+                a.mov_rm("rax", "r11", 0)
+                a.mov_mr("rbp", self.gc_frame_disp + 0, "rax")
+                a.lea("rax", "rbp", self.obj_slots_base_disp)
+                a.mov_mr("rbp", self.gc_frame_disp + 8, "rax")
+                a.mov_mi("rbp", self.gc_frame_disp + 16, 0)
+                a.mov_mi("rbp", self.gc_frame_disp + 24, len(self.obj_vregs))
+                a.lea("rax", "rbp", self.gc_frame_disp)
+                a.mov_mr("r11", 0, "rax")
         for block in self.fn.blocks:
+            self.cur_block_label = block.label
             a.bind(block.label)
             instrs = block.instrs
             i = 0
@@ -186,6 +249,10 @@ class FuncEmitter:
                 a.pop_r(reg)
             a.ret()
         else:
+            if self.has_gc_frame:
+                a.mov_rm("r10", "rbp", self.gc_frame_disp + 0)
+                a.mov_abs64("r11", ("data", self.rt.gc_frame_top_off))
+                a.mov_mr("r11", 0, "r10")
             for reg, disp in self.xmm_save.items():
                 a.mov_rm_xmm(reg, "rbp", disp)
             for reg, disp in self.gpr_save.items():
@@ -232,6 +299,17 @@ class FuncEmitter:
     def emit_arg(self, ins) -> None:
         v = ins.dst
         idx = ins.args[0]
+        if isinstance(idx, tuple):
+            idx = idx[0]
+        if idx >= 4:
+            disp = 48 + (idx - 4) * 8
+            if v.ty == FLOAT:
+                self.a.mov_rm_xmm("xmm0", "rbp", disp)
+                self._write_xmm(v, "xmm0")
+            else:
+                self.a.mov_rm("rax", "rbp", disp)
+                self._write_gpr(v, "rax")
+            return
         if v.ty == FLOAT:
             src = XMM_ARGS[idx]
             self._write_xmm(v, src)
@@ -521,9 +599,18 @@ class FuncEmitter:
         label = ins.args[0]
         args = ins.args[1]
         a = self.a
+        for i in range(4, len(args)):
+            v = args[i]
+            disp = 32 + (i - 4) * 8
+            if v.ty == FLOAT:
+                src = self._read_xmm(v, set())
+                a.mov_mr_xmm("rsp", disp, src)
+            else:
+                src = self._read_gpr(v, set())
+                a.mov_mr("rsp", disp, src)
         gp = 0
         xp = 0
-        for v in args:
+        for v in args[:4]:
             if v.ty == FLOAT:
                 dst = XMM_ARGS[xp]
                 xp += 1
@@ -536,6 +623,7 @@ class FuncEmitter:
                 src = self._read_gpr(v, set(GP_ARGS))
                 if src != dst:
                     a.mov_rr(dst, src)
+        self._update_safepoint(ins)
         a.call(label)
         dst = ins.dst
         if dst is None:
@@ -561,6 +649,7 @@ class FuncEmitter:
     def emit_print(self, ins) -> None:
         kind, v = ins.args
         a = self.a
+        self._update_safepoint(ins)
         if kind == "int":
             src = self._read_gpr(v, {"rcx"})
             if src != "rcx":

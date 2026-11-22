@@ -38,7 +38,8 @@ class CompileResult:
     program: Program
 
 
-def compile_source(source: str, filename: str = "<input>", boxed: bool = False, dynamic_int: bool = False) -> CompileResult:
+def compile_source(source: str, filename: str = "<input>", boxed: bool = False,
+                   dynamic_int: bool = False, gc_conservative: bool = False) -> CompileResult:
     t0 = time.perf_counter()
     tree = ast.parse(source, filename)
 
@@ -47,7 +48,7 @@ def compile_source(source: str, filename: str = "<input>", boxed: bool = False, 
     rdata = DataBuilder()
     data = DataBuilder()
     imports = make_imports()
-    runtime = Runtime(imports, rdata, data)
+    runtime = Runtime(imports, rdata, data, gc_conservative=gc_conservative)
 
     lowerer = Lowerer(analyzer, rdata, filename, boxed=boxed, dynamic_int=dynamic_int)
     program = lowerer.run()
@@ -96,11 +97,13 @@ def compile_source(source: str, filename: str = "<input>", boxed: bool = False, 
     return CompileResult(exe=exe, stats=stats, program=program)
 
 
-def compile_file(path: str, boxed: bool = False, dynamic_int: bool = False) -> CompileResult:
+def compile_file(path: str, boxed: bool = False, dynamic_int: bool = False,
+                 gc_conservative: bool = False) -> CompileResult:
     # utf-8-sig: CPython's tokenizer accepts (and strips) a UTF-8 BOM.
     with open(path, "r", encoding="utf-8-sig") as f:
         source = f.read()
-    return compile_source(source, path, boxed=boxed, dynamic_int=dynamic_int)
+    return compile_source(source, path, boxed=boxed, dynamic_int=dynamic_int,
+                          gc_conservative=gc_conservative)
 
 
 def analyze_source(source: str, filename: str = "<input>", boxed: bool = False, dynamic_int: bool = False) -> Analyzer:

@@ -48,6 +48,12 @@ def norm_numeric(ty: str) -> str:
     return INT if ty == BOOL else ty
 
 
+def is_func_type(ty: str | None) -> bool:
+    return isinstance(ty, str) and (
+        ty == "func" or ty.startswith("func:") or ty.startswith("func*")
+    )
+
+
 def assignable(src: str | None, dst: str | None) -> bool:
     if src is None or dst is None:
         return True
@@ -56,6 +62,9 @@ def assignable(src: str | None, dst: str | None) -> bool:
     if src == BOOL and dst == INT:
         return True
     if src == INT and dst == FLOAT:
+        return True
+    if is_func_type(src) and isinstance(dst, str) and (
+            dst == "func" or dst.startswith("func*")):
         return True
     return False
 
@@ -70,6 +79,12 @@ def join(a: str | None, b: str | None) -> str | None:
         return a
     if a in NUMERIC_RANK and b in NUMERIC_RANK:
         return FLOAT if FLOAT in (a, b) else INT
+    if is_func_type(a) and is_func_type(b):
+        if isinstance(a, str) and a.startswith("func*"):
+            return a
+        if isinstance(b, str) and b.startswith("func*"):
+            return b
+        return "func"
     raise VelaTypeError(f"cannot mix {a} and {b} in one expression")
 
 
@@ -121,8 +136,8 @@ class _CallRenamer(ast.NodeTransformer):
         if isinstance(node.func, ast.Name) and node.func.id == self.old:
             node.func.id = self.new
             if self.captures:
-                node.args = [ast.Name(id=c, ctx=ast.Load())
-                             for c in self.captures] + node.args
+                node.args = node.args + [ast.Name(id=c, ctx=ast.Load())
+                                         for c in self.captures]
         return node
 
 
@@ -346,7 +361,7 @@ class Analyzer:
                 if node.name in self.funcs:
                     raise VelaCompileError(f"duplicate function definition '{node.name}'", node)
                 all_args = list(a.posonlyargs) + list(a.args)
-                if len(all_args) > 4:
+                if len(all_args) > 4 and not self.boxed:
                     raise UnsupportedError("more than 4 parameters (Win64 ABI v0.1 limit)", node)
                 info = FuncInfo(node=node, name=node.name)
                 for arg in all_args:
@@ -356,6 +371,21 @@ class Analyzer:
                 info.param_types = list(info.param_ann)
                 info.ret_type = info.ret_ann
                 self.funcs[node.name] = info
+
+    def _func_ret(self, ty: str | None) -> str:
+        if isinstance(ty, str) and ty.startswith("func:"):
+            fn = self.funcs.get(ty[5:])
+            return (fn.ret_type if fn and fn.ret_type is not None else INT)
+        if isinstance(ty, str) and ty.startswith("func*"):
+            return ty[5:] or INT
+        return INT
+
+    def _join_func(self, a: str, b: str) -> str:
+        if a == b:
+            return a
+        ra = self._func_ret(a)
+        rb = self._func_ret(b)
+        return "func*" + (join(ra, rb) or INT)
 
     # -- inference ---------------------------------------------------------
     def _infer_func(self, info: FuncInfo, commit: bool = False) -> bool:
@@ -372,6 +402,9 @@ class Analyzer:
                 continue
             new = env.get(p)
             if new is not None and new != info.param_types[i]:
+                if is_func_type(info.param_types[i]) and is_func_type(new):
+                    info.param_types[i] = self._join_func(info.param_types[i], new)
+                    continue
                 if not assignable(info.param_types[i], new):
                     raise VelaTypeError(
                         f"parameter '{p}' of {info.name}() is inferred as "
@@ -379,7 +412,10 @@ class Analyzer:
                 info.param_types[i] = new
         rt: str | None = None
         for t in rets:
-            rt = join(rt, t)
+            if is_func_type(rt) and is_func_type(t):
+                rt = self._join_func(rt, t)
+            else:
+                rt = join(rt, t)
         if info.ret_ann is not None:
             for t in rets:
                 if not assignable(t, info.ret_ann):
@@ -613,6 +649,9 @@ class Analyzer:
             return
         if ty is None:
             return
+        if is_func_type(old) and is_func_type(ty):
+            env[name] = self._join_func(old, ty)
+            return
         if not assignable(ty, old):
             if assignable(old, ty):
                 env[name] = ty
@@ -625,11 +664,18 @@ class Analyzer:
     def _merge_env(self, env: dict[str, str | None], a: dict[str, str | None],
                    b: dict[str, str | None]) -> None:
         for k in set(a) | set(b):
-            t = join(a.get(k), b.get(k))
+            ta, tb = a.get(k), b.get(k)
+            if is_func_type(ta) and is_func_type(tb):
+                t = self._join_func(ta, tb)
+            else:
+                t = join(ta, tb)
             if t is None:
                 continue
             old = env.get(k)
-            env[k] = t if old is None else join(old, t)
+            if is_func_type(old) and is_func_type(t):
+                env[k] = self._join_func(old, t)
+            else:
+                env[k] = t if old is None else join(old, t)
 
     def _condition(self, node: ast.expr, env: dict[str, str | None]) -> None:
         ty = self._infer(node, env, BOOL)
@@ -691,6 +737,8 @@ class Analyzer:
             if node.id in self.const_globals and not self._module_scope:
                 return self.const_globals[node.id][0]
             if node.id in self.funcs:
+                if self.boxed:
+                    return "func:" + node.id
                 raise UnsupportedError("function object as a value", node)
             if self._module_scope:
                 raise VelaCompileError(
@@ -754,6 +802,10 @@ class Analyzer:
                 if lt is not None and rt is not None:
                     if self.boxed and lt == STR and rt == STR \
                             and isinstance(op, (ast.Eq, ast.NotEq)):
+                        left, lt = comp, rt
+                        continue
+                    if self.boxed and is_func_type(lt) and is_func_type(rt) \
+                            and isinstance(op, (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)):
                         left, lt = comp, rt
                         continue
                     if not (is_numeric(lt) and is_numeric(rt)):
@@ -1115,37 +1167,44 @@ class Analyzer:
                 t = self._infer(arg, env, want)
                 if want is None and t is not None:
                     info.param_types[i] = t
-                    if isinstance(t, str) and t.startswith("func:"):
+                    if is_func_type(t):
+                        info.ret_type = info.ret_ann
                         self._infer_func(info, commit=True)
+                        self._finalize(info)
                         continue
                 elif want is not None and not assignable(t, want):
                     if self.boxed and info.param_ann[i] is None \
-                            and want == INT and t == STR:
-                        info.param_types[i] = STR
-                        self._infer_func(info, commit=True)
-                        continue
-                    if self.boxed and info.param_ann[i] is None \
-                            and want == INT and t == "bigint":
-                        info.param_types[i] = "bigint"
-                        self._infer_func(info, commit=True)
-                        continue
-                    if info.param_ann[i] is None and want == INT \
-                            and isinstance(t, str) and t.startswith("func:"):
+                            and want == INT and t in (STR, FLOAT, BOOL, "bigint"):
                         info.param_types[i] = t
+                        info.ret_type = info.ret_ann
                         self._infer_func(info, commit=True)
+                        self._finalize(info)
                         continue
-                    if info.param_ann[i] is None \
-                            and isinstance(want, str) and want.startswith("func:") \
-                            and isinstance(t, str) and t.startswith("func:"):
-                        info.param_types[i] = "func"
+                    if info.param_ann[i] is None and want == INT and is_func_type(t):
+                        info.param_types[i] = t
+                        for j in range(i + 1, len(info.params)):
+                            if info.param_ann[j] is None:
+                                info.param_types[j] = None
+                        info.ret_type = info.ret_ann
                         self._infer_func(info, commit=True)
+                        self._finalize(info)
+                        continue
+                    if info.param_ann[i] is None and is_func_type(want) and is_func_type(t):
+                        info.param_types[i] = self._join_func(want, t)
+                        info.ret_type = info.ret_ann
+                        self._infer_func(info, commit=True)
+                        self._finalize(info)
                         continue
                     raise VelaTypeError(
                         f"argument {i + 1} of {name}() is {type_name(t)} but the "
                         f"parameter is {want}", arg)
             return info.ret_type
         if name in env:
+            for arg in node.args:
+                self._infer(arg, env, None)
+            if is_func_type(ft):
+                return self._func_ret(ft)
             # A parameter may receive a function value from a later call site.
             # Defer; the parameter type is widened and the body re-inferred.
-            return INT
+            return hint or INT
         raise UnsupportedError(f"call to unknown function '{name}'", node)

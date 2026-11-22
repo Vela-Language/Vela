@@ -49,6 +49,9 @@ class Allocation:
         self.regs: dict[VReg, str] = {}
         self.slots: dict[VReg, int] = {}
         self.slot_count = 0
+        self.intervals: dict[VReg, list] = {}
+        self.live_in: dict[str, set[VReg]] = {}
+        self.ins_pos: dict[int, int] = {}
 
     def loc(self, v: VReg):
         if v in self.regs:
@@ -179,6 +182,13 @@ def allocate(fn: Function) -> Allocation:
     live_in, live_out, by_label = analyse_liveness(fn)
     intervals = build_intervals(fn, live_in, live_out, by_label)
     alloc = Allocation()
+    alloc.intervals = intervals
+    alloc.live_in = live_in
+    idx = 0
+    for b in fn.blocks:
+        for ins in b.instrs:
+            alloc.ins_pos[id(ins)] = idx
+            idx += 1
     gpr_items = [(v, iv) for v, iv in intervals.items() if v.ty in GPR_CLASS]
     xmm_items = [(v, iv) for v, iv in intervals.items() if v.ty in XMM_CLASS]
     _scan(gpr_items, ALLOC_GPR, alloc)

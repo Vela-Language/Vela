@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import ast
 
-from .analyze import Analyzer, FuncInfo, is_numeric, norm_numeric
+from .analyze import Analyzer, FuncInfo, is_func_type, is_numeric, norm_numeric
 from .errors import UnsupportedError, VelaCompileError, VelaTypeError
 from .ir import (BOOL, FLOAT, GPR_TYPES, INT, NONE, OBJ, Program, STR, UNKNOWN,
                  Function, VReg)
@@ -29,27 +29,59 @@ class Lowerer:
         self.mutable_globals = set(getattr(analyzer, "mutable_globals", set()))
         self.global_slots = {name: i for i, name in enumerate(sorted(self.mutable_globals))}
         self.strings: dict[str, int] = {}
+        self.wrapped_funcs: set[str] = set()
 
     # -- public ------------------------------------------------------------
     def run(self) -> Program:
         prog = Program(strings=self.rdata)
+        by_name: dict[str, Function] = {}
         for info in self.an.funcs.values():
-            prog.functions.append(self.lower_function(info))
+            fn = self.lower_function(info)
+            by_name[info.name] = fn
+            prog.functions.append(fn)
         prog.main = self.lower_main()
+        for qual in sorted(self.wrapped_funcs):
+            if qual in by_name:
+                by_name[qual].no_inline = True
+                prog.functions.append(self.lower_wrapper(self.an.funcs[qual]))
         prog.functions.append(prog.main)
         return prog
 
+    def lower_wrapper(self, info: FuncInfo) -> Function:
+        fn = Function("fn_wrap_" + info.name, OBJ)
+        fn.no_inline = True
+        argv = fn.new_vreg(OBJ, "argv")
+        fn.params.append(argv)
+        fn.entry.add("arg", argv, 0)
+        call_args: list[VReg] = []
+        for i in range(len(info.params)):
+            idx = fn.new_vreg(INT, f"idx_{i}")
+            fn.entry.add("const", idx, i)
+            elem = fn.new_vreg(OBJ, f"arg_{i}")
+            fn.entry.add("call", elem, "rt_list_get", (argv, idx))
+            call_args.append(elem)
+        ret = info.ret_type or NONE
+        if ret == NONE:
+            fn.entry.add("call", None, info.label, tuple(call_args))
+            out = fn.new_vreg(OBJ, "none_ret")
+            fn.entry.add("call", out, "rt_box_none", ())
+            fn.entry.add("ret", None, out)
+        else:
+            out = fn.new_vreg(OBJ, "wrap_ret")
+            fn.entry.add("call", out, info.label, tuple(call_args))
+            fn.entry.add("ret", None, out)
+        return fn
+
     def lower_function(self, info: FuncInfo) -> Function:
         native_ret = info.ret_type or NONE
-        if isinstance(native_ret, str) and native_ret.startswith("func:"):
+        if (native_ret in ("list", "dict", "tuple", "set", "bigint", "bytes", "strlist", "module", "modules")
+                or is_func_type(native_ret)):
             native_ret = OBJ
         boxed_ret = self.boxed and (
             native_ret in (INT, FLOAT, BOOL, STR, "bigint")
             or (self.dynamic_int and native_ret == INT))
         fn = Function(info.label, OBJ if boxed_ret else native_ret)
-        if any(isinstance(t, str) and (t == "func" or t.startswith("func:"))
-               for t in info.param_types) or (
-                isinstance(native_ret, str) and native_ret.startswith("func:")):
+        if any(is_func_type(t) for t in info.param_types) or is_func_type(info.ret_type):
             fn.no_inline = True
         b = FuncBuilder(self, fn, info.name, info.var_types, info.ret_type or NONE)
         b.globals = set(info.globals)
@@ -59,8 +91,8 @@ class Lowerer:
                 v = fn.new_vreg(OBJ, pname + "_obj")
                 fn.params.append(v)
                 fn.entry.add("arg", v, i)
-            elif self.boxed and (pty in ("list", "dict", "tuple", "set", "bigint")
-                                 or (isinstance(pty, str) and (pty == "func" or pty.startswith("func:")))):
+            elif self.boxed and (pty in ("list", "dict", "tuple", "set", "bigint", "bytes", "strlist", "module", "modules")
+                                 or is_func_type(pty)):
                 v = fn.new_vreg(OBJ, pname + "_obj")
                 fn.params.append(v)
                 fn.entry.add("arg", v, i)
@@ -74,14 +106,6 @@ class Lowerer:
             fname = fn.new_vreg(STR, "func_name")
             fn.entry.add("str", fname, self.string_offset(info.name))
             fn.entry.add("call", None, "rt_enter", (fname,))
-        if self.boxed:
-            zero = fn.new_vreg(INT, "zero_slot")
-            fn.entry.add("const", zero, 0)
-            for name, ty in info.var_types.items():
-                if ty in (INT, FLOAT, BOOL, STR) and name not in b.locals:
-                    slot = fn.new_vreg(OBJ, name + "_obj")
-                    fn.entry.add("mov", slot, zero)
-                    b.locals[name] = slot
         for stmt in info.node.body:
             b.stmt(stmt)
         b.finish()
@@ -178,8 +202,8 @@ class FuncBuilder:
             r = self.fn.new_vreg(BOOL)
             self.cur.add("call", r, "rt_is_true", (v,))
             return r
-        if (want in ("list", "dict", "tuple", "set", "bigint", "strlist", "module", "modules")
-                or (isinstance(want, str) and (want == "func" or want.startswith("func:")))) and v.ty == OBJ:
+        if (want in ("list", "dict", "tuple", "set", "bigint", "bytes", "strlist", "module", "modules")
+                or is_func_type(want)) and v.ty == OBJ:
             return v
         raise VelaTypeError(f"cannot convert {v.ty} to {want}")
 
@@ -440,8 +464,12 @@ class FuncBuilder:
             return o
         raise VelaTypeError(f"cannot use {v.ty} as integer")
 
-    def box_scalar(self, v: VReg) -> VReg:
-        if self.dyn and v.ty == OBJ:
+    def box_scalar(self, v: VReg | None) -> VReg:
+        if v is None:
+            o = self.fn.new_vreg(OBJ, "boxed_none")
+            self.cur.add("call", o, "rt_box_none", ())
+            return o
+        if v.ty == OBJ:
             return v
         o = self.fn.new_vreg(OBJ, "boxed")
         label = {INT: "rt_box_int", FLOAT: "rt_box_float",
@@ -470,8 +498,8 @@ class FuncBuilder:
             raise VelaCompileError(
                 f"local variable '{name}' is used before assignment", node)
         declared = self.var_types.get(name)
-        if self.lw.boxed and (declared in ("list", "dict", "tuple", "set", "bigint", "strlist", "module", "modules")
-                              or (isinstance(declared, str) and (declared == "func" or declared.startswith("func:")))) and v.ty == OBJ:
+        if self.lw.boxed and (declared in ("list", "dict", "tuple", "set", "bigint", "bytes", "strlist", "module", "modules")
+                              or is_func_type(declared)) and v.ty == OBJ:
             return v
         if self.lw.boxed and v.ty == OBJ and declared in (INT, FLOAT, BOOL, STR):
             r = self.fn.new_vreg(declared, name + "_v")
@@ -510,8 +538,8 @@ class FuncBuilder:
             self.cur.add("mov", v, value)
             self.assigned.add(name)
             return
-        if self.lw.boxed and (declared in ("list", "dict", "tuple", "set", "bigint", "strlist", "module", "modules")
-                              or declared.startswith("func:")):
+        if self.lw.boxed and (declared in ("list", "dict", "tuple", "set", "bigint", "bytes", "strlist", "module", "modules")
+                              or is_func_type(declared)):
             v = self.locals.get(name)
             if v is None or v.ty != OBJ:
                 v = self.fn.new_vreg(OBJ, name + "_list")
@@ -521,7 +549,7 @@ class FuncBuilder:
             self.cur.add("mov", v, value)
             self.assigned.add(name)
             return
-        if self.lw.boxed and declared in (INT, FLOAT, BOOL, STR):
+        if self.lw.boxed and name in self.param_names and declared in (INT, FLOAT, BOOL, STR):
             v = self.locals.get(name)
             if v is None or v.ty != OBJ:
                 v = self.fn.new_vreg(OBJ, name + "_obj")
@@ -614,9 +642,11 @@ class FuncBuilder:
                 else:
                     key = self.coerce(self.expr(target.slice), INT)
                     native = self.coerce(self.expr(node.value), INT)
+                    old = self.call_rt("rt_list_get", [obj, key], OBJ)
                     boxed = self.fn.new_vreg(OBJ, "boxed_set")
                     self.cur.add("call", boxed, "rt_box_int", (native,))
                     self.cur.add("call", None, "rt_list_set", (obj, key, boxed))
+                    self.cur.add("call", None, "rt_decref", (old,))
                 return
             value = self.expr(node.value)
             if isinstance(target, ast.Name):
@@ -1091,6 +1121,10 @@ class FuncBuilder:
                 else:
                     self.cur.add("const", v, val)
                 return v
+            if self.lw.boxed and node.id not in self.locals \
+                    and node.id not in self.globals \
+                    and node.id in self.lw.an.funcs:
+                return self.emit_func_value(node.id, node)
             return self.var(node.id, node)
         if isinstance(node, ast.Dict):
             obj = self.call_rt("rt_dict_new", [], OBJ)
@@ -1160,8 +1194,11 @@ class FuncBuilder:
             return self.call_rt("rt_str_index", [desc, idx], STR)
         if isinstance(node, ast.Subscript) and getattr(node.value, "_vela_ty", None) == "dict":
             obj = self.expr(node.value)
-            keyo = self.box_scalar(self.expr(node.slice))
+            key_expr = self.expr(node.slice)
+            keyo = self.box_scalar(key_expr)
             val = self.call_rt("rt_dict_get", [obj, keyo], OBJ)
+            if key_expr.ty != OBJ:
+                self.cur.add("call", None, "rt_decref", (keyo,))
             native = self.fn.new_vreg(INT)
             self.cur.add("call", native, "rt_unbox_int", (val,))
             return native
@@ -1434,9 +1471,12 @@ class FuncBuilder:
     def compare(self, node: ast.Compare) -> VReg:
         if len(node.ops) == 1 and isinstance(node.ops[0], (ast.In, ast.NotIn)):
             right = self.expr(node.comparators[0])
-            vo = self.box_scalar(self.expr(node.left))
+            left_expr = self.expr(node.left)
+            vo = self.box_scalar(left_expr)
             label = "rt_dict_contains" if getattr(node.comparators[0], "_vela_ty", None) in ("dict", "modules") else "rt_contains"
             res = self.call_rt(label, [right, vo], BOOL)
+            if left_expr.ty != OBJ:
+                self.cur.add("call", None, "rt_decref", (vo,))
             if isinstance(node.ops[0], ast.In):
                 return res
             z = self.const_int(0)
@@ -1472,6 +1512,14 @@ class FuncBuilder:
                   node: ast.AST) -> VReg:
         if left is None or right is None:
             raise UnsupportedError("comparison with None", node)
+        if self.lw.boxed and left.ty == OBJ and right.ty == OBJ \
+                and isinstance(op, (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)) \
+                and isinstance(node, ast.Compare) \
+                and is_func_type(getattr(node.left, "_vela_ty", None)):
+            r = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", r, "eq" if isinstance(op, (ast.Eq, ast.Is)) else "ne",
+                         left, right)
+            return r
         if self.dyn and (left.ty in (INT, OBJ) and right.ty in (INT, OBJ)):
             a = self.as_num(left)
             b = self.as_num(right)
@@ -1557,18 +1605,21 @@ class FuncBuilder:
         self.cur.add("call", dst, label, tuple(args))
         return dst  # type: ignore[return-value]
 
+    def emit_func_value(self, qual: str, node: ast.AST) -> VReg:
+        info = self.lw.an.funcs.get(qual)
+        if info is None:
+            raise UnsupportedError(f"unknown function value '{qual}'", node)
+        self.lw.wrapped_funcs.add(qual)
+        addr = self.fn.new_vreg(INT, "func_addr")
+        self.cur.add("addr", addr, "fn_wrap_" + info.name)
+        code = self.fn.new_vreg(OBJ, "func_value")
+        self.cur.add("call", code, "rt_code_new",
+                     (addr, self.const_int(len(info.params))))
+        return code
+
     def call(self, node: ast.Call) -> VReg | None:
         if isinstance(node.func, ast.Name) and node.func.id == "__module_func":
-            qual = node.args[0].value
-            info = self.lw.an.funcs.get(qual)
-            if info is None:
-                raise UnsupportedError(f"unknown function value '{qual}'", node)
-            addr = self.fn.new_vreg(INT, "func_addr")
-            self.cur.add("addr", addr, info.label)
-            code = self.fn.new_vreg(OBJ, "func_value")
-            self.cur.add("call", code, "rt_code_new",
-                         (addr, self.const_int(len(info.params))))
-            return code
+            return self.emit_func_value(node.args[0].value, node)
         if isinstance(node.func, ast.Name) and node.func.id == "__modules_registry":
             obj = self.call_rt("rt_dict_new", [self.const_int(0)], OBJ)
             for i in range(0, len(node.args), 2):
@@ -1739,22 +1790,25 @@ class FuncBuilder:
             return r
         target = name
         ft = self.var_types.get(name)
-        if ft == "func":
+        if ft == "func" or (isinstance(ft, str) and ft.startswith("func*")):
             code = self.expr(node.func)
-            if len(node.args) > 3:
-                raise UnsupportedError("dynamic call with more than 3 arguments", node)
-            boxed_args = []
-            for a in node.args:
-                boxed_args.append(self.box_scalar(self.expr(a)))
-            zero = self.const_int(0)
-            while len(boxed_args) < 3:
-                boxed_args.append(zero)
+            argv = self.call_rt("rt_list_new", [self.const_int(len(node.args))], OBJ)
+            for idx_i, a in enumerate(node.args):
+                boxed_a = self.box_scalar(self.expr(a))
+                self.cur.add("call", None, "rt_list_set",
+                             (argv, self.const_int(idx_i), boxed_a))
             res = self.fn.new_vreg(OBJ, "dyn_call")
-            self.cur.add("call", res, "rt_code_call",
-                         (code, boxed_args[0], boxed_args[1], boxed_args[2]))
-            native = self.fn.new_vreg(INT, "dyn_ret")
-            self.cur.add("call", native, "rt_unbox_int", (res,))
-            return native
+            self.cur.add("call", res, "rt_code_call_argv", (code, argv))
+            ret_ty = ft[5:] if isinstance(ft, str) and ft.startswith("func*") else INT
+            if ret_ty == NONE:
+                return None
+            if ret_ty in (INT, FLOAT, BOOL, STR) and not (self.dyn and ret_ty == INT):
+                native = self.fn.new_vreg(ret_ty, "dyn_ret")
+                unbox = {INT: "rt_unbox_int", FLOAT: "rt_unbox_float",
+                         BOOL: "rt_unbox_bool", STR: "rt_unbox_str"}[ret_ty]
+                self.cur.add("call", native, unbox, (res,))
+                return native
+            return res
         if isinstance(ft, str) and ft.startswith("func:"):
             target = ft[5:]
         info = self.lw.an.funcs.get(target)
@@ -1785,8 +1839,9 @@ class FuncBuilder:
             self.cur.add("call", native, unbox, (obj,))
             self.cur.add("call", None, "rt_decref", (obj,))
             return native
-        dst_ty = OBJ if ((self.dyn and ret == INT) or ret == "bigint"
-                         or (isinstance(ret, str) and ret.startswith("func:"))) else ret
+        dst_ty = OBJ if ((self.dyn and ret == INT)
+                         or ret in ("bigint", "list", "dict", "tuple", "set", "bytes", "strlist", "module", "modules")
+                         or is_func_type(ret)) else ret
         dst = self.fn.new_vreg(dst_ty) if ret != NONE else None
         self.cur.add("call", dst, info.label, tuple(args))
         return dst

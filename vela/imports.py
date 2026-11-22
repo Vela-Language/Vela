@@ -152,7 +152,7 @@ def expand_imports(tree: ast.Module, filename: str) -> ast.Module:
                     and isinstance(v.value.value, ast.Name) \
                     and v.value.value.id == "sys" and v.value.attr == "modules" \
                     and isinstance(v.slice, ast.Constant) \
-                    and isinstance(v.slice.value, str) and v.slice.value in module_index \
+                    and isinstance(v.slice.value, str) and v.slice.value in modules \
                     and node.attr in modules[v.slice.value][0]:
                 qual = v.slice.value.replace(".", "__") + "__" + node.attr
                 call = ast.Call(
