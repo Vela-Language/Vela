@@ -896,6 +896,10 @@ class FuncBuilder:
 
     def try_stmt(self, node: ast.Try) -> None:
         n = len(node.handlers)
+        is_star = getattr(node, "_vela_trystar", False)
+        handled = self.fn.new_vreg(INT, "eg_handled") if is_star else None
+        if handled is not None:
+            self.cur.add("const", handled, 0)
         body = self.new_block("try_body")
         dispatch = [self.new_block(f"try_dispatch_{i}") for i in range(n + 1)]
         hblocks = [self.new_block(f"try_except_{i}") for i in range(n)]
@@ -926,6 +930,26 @@ class FuncBuilder:
                 expected = types.get(getattr(h.type, "id", ""), 1)
                 if expected == 0:
                     self.cur.add("jmp", None, hblocks[i].block.label)
+                elif is_star:
+                    code = self.call_rt("rt_exc_code", [], INT)
+                    want = self.const_int(expected)
+                    c_eq = self.fn.new_vreg(BOOL)
+                    self.cur.add("cmp", c_eq, "eq", code, want)
+                    mask_bit = self.const_int(1 << expected)
+                    masked = self.fn.new_vreg(INT)
+                    self.cur.add("bin", masked, "and", code, mask_bit)
+                    c_mask = self.fn.new_vreg(BOOL)
+                    self.cur.add("cmp", c_mask, "ne", masked, self.const_int(0))
+                    is_eg = self.fn.new_vreg(INT)
+                    self.cur.add("bin", is_eg, "and", code, self.const_int(0x100))
+                    c_eg = self.fn.new_vreg(BOOL)
+                    self.cur.add("cmp", c_eg, "ne", is_eg, self.const_int(0))
+                    c_both = self.fn.new_vreg(INT)
+                    self.cur.add("bin", c_both, "and", c_mask, c_eg)
+                    c_any = self.fn.new_vreg(INT)
+                    self.cur.add("bin", c_any, "or", c_eq, c_both)
+                    self.cur.add("br", None, c_any, hblocks[i].block.label,
+                                 dispatch[i + 1].block.label)
                 else:
                     code = self.call_rt("rt_exc_code", [], INT)
                     want = self.const_int(expected)
@@ -934,12 +958,25 @@ class FuncBuilder:
                     self.cur.add("br", None, cond, hblocks[i].block.label,
                                  dispatch[i + 1].block.label)
         self.use(dispatch[n])
+        if is_star and handled is not None:
+            c_h = self.fn.new_vreg(BOOL)
+            self.cur.add("cmp", c_h, "ne", handled, self.const_int(0))
+            fin_b = self.new_block("trystar_fin")
+            reraise_b = self.new_block("trystar_reraise")
+            self.cur.add("br", None, c_h, fin_b.block.label, reraise_b.block.label)
+            self.use(fin_b)
+            for stmt in node.finalbody:
+                self.stmt(stmt)
+            self.cur.add("jmp", None, done.block.label)
+            self.use(reraise_b)
         for stmt in node.finalbody:
             self.stmt(stmt)
         self.cur.add("call", None, "rt_reraise", ())
         self.cur.add("jmp", None, done.block.label)
         for i, h in enumerate(node.handlers):
             self.use(hblocks[i])
+            if is_star and handled is not None:
+                self.cur.add("const", handled, 1)
             if h.name:
                 self.var_types[h.name] = STR
                 desc = self.call_rt("rt_exc_desc", [], STR)
@@ -948,10 +985,12 @@ class FuncBuilder:
             for stmt in h.body:
                 self.stmt(stmt)
             self.finally_stack.pop()
-            for stmt in node.finalbody:
-                self.stmt(stmt)
+            if not is_star:
+                for stmt in node.finalbody:
+                    self.stmt(stmt)
             if self.cur.terminator is None:
-                self.cur.add("jmp", None, done.block.label)
+                self.cur.add("jmp", None,
+                             dispatch[i + 1].block.label if is_star else done.block.label)
         self.use(done)
 
     def emit_finally(self) -> None:
@@ -966,17 +1005,29 @@ class FuncBuilder:
                      "AttributeError": 4, "KeyError": 5, "IndexError": 6}
         if node.exc is not None:
             if isinstance(node.exc, ast.Call):
-                if node.exc.args:
+                if isinstance(node.exc.func, ast.Name) and node.exc.func.id == "ExceptionGroup" \
+                        and len(node.exc.args) == 2 and isinstance(node.exc.args[1], ast.List):
                     desc = self.expr(node.exc.args[0])
-                code_val = exc_types.get(node.exc.func.id, 1)
+                    code_val = 0x100
+                    for elt in node.exc.args[1].elts:
+                        if isinstance(elt, ast.Call) and isinstance(elt.func, ast.Name):
+                            bit = exc_types.get(elt.func.id, 1)
+                            code_val |= (1 << bit)
+                else:
+                    if node.exc.args:
+                        desc = self.expr(node.exc.args[0])
+                    code_val = exc_types.get(node.exc.func.id, 1)
             elif isinstance(node.exc, ast.Name):
                 code_val = exc_types.get(node.exc.id, 1)
         cause = self.const_int(0)
         if node.cause is not None:
             c = node.cause
-            if not (isinstance(c, ast.Call) and len(c.args) == 1):
+            if isinstance(c, ast.Name):
+                cause = self.coerce(self.expr(c), STR)
+            elif isinstance(c, ast.Call) and len(c.args) == 1:
+                cause = self.coerce(self.expr(c.args[0]), STR)
+            else:
                 raise UnsupportedError("raise ... from with a non-call cause", node)
-            cause = self.coerce(self.expr(c.args[0]), STR)
         self.cur.add("call", None, "rt_set_cause", (cause,))
         code = self.const_int(code_val)
         line = self.const_int(node.lineno)
@@ -1850,6 +1901,40 @@ class FuncBuilder:
             r = self.fn.new_vreg(BOOL)
             self.cur.add("cmp", r, "ne", raw, self.const_int(0))
             return r
+        if isinstance(node.func, ast.Name) and node.func.id == "__set_finalizer":
+            obj = self.expr(node.args[0])
+            a1 = node.args[1]
+            fn_label: str | None = None
+            if isinstance(a1, ast.Constant) and isinstance(a1.value, str):
+                fn_label = "fn_" + a1.value
+            else:
+                ty1 = getattr(a1, "_vela_ty", None)
+                if isinstance(ty1, str) and ty1.startswith("func:"):
+                    fn_label = "fn_" + ty1[5:]
+            if fn_label is not None:
+                addr = self.fn.new_vreg(INT, "fin_addr")
+                self.cur.add("addr", addr, fn_label)
+                self.cur.add("call", None, "rt_set_finalizer", (obj, addr))
+            return None
+        if isinstance(node.func, ast.Name) and node.func.id == "__del_var":
+            v = self.expr(node.args[0])
+            if v is not None and v.ty == FLOAT:
+                return self.const_float(0.0)
+            if v is not None and v.ty == OBJ:
+                z = self.fn.new_vreg(OBJ, "del_null")
+                self.cur.add("const", z, 0)
+                return z
+            return self.const_int(0)
+        if isinstance(node.func, ast.Name) and node.func.id == "__ptr_to_int":
+            v = self.expr(node.args[0])
+            r = self.fn.new_vreg(INT, "raw_ptr")
+            self.cur.add("mov", r, v)
+            return r
+        if isinstance(node.func, ast.Name) and node.func.id == "__gc_is_alive":
+            p = self.coerce(self.expr(node.args[0]), INT)
+            return self.call_rt("rt_gc_is_alive", [p], BOOL)
+        if isinstance(node.func, ast.Name) and node.func.id == "__exc_desc":
+            return self.call_rt("rt_exc_desc", [], STR)
         if isinstance(node.func, ast.Name) and node.func.id == "__module_func":
             return self.emit_func_value(node.args[0].value, node)
         if isinstance(node.func, ast.Name) and node.func.id == "__modules_registry":

@@ -2176,6 +2176,22 @@ def _desugar_classes(tree: ast.Module, counter: _Counter) -> None:
                 ),
                 ast.Return(value=ast.Name(id="self", ctx=ast.Load())),
             ]
+        del_res = resolve_method(cname, "__del__")
+        if del_res is not None:
+            del_owner, _ = del_res
+            new_body.insert(
+                -1,
+                ast.Expr(
+                    value=ast.Call(
+                        func=ast.Name(id="__set_finalizer", ctx=ast.Load()),
+                        args=[
+                            ast.Name(id="self", ctx=ast.Load()),
+                            ast.Constant(value=f"{del_owner}____del__"),
+                        ],
+                        keywords=[],
+                    )
+                ),
+            )
         new_fn = ast.FunctionDef(
             name=f"__new_{cname}",
             args=init_args,
@@ -2649,6 +2665,15 @@ class _ModernSyntaxPreDesugarer(ast.NodeTransformer):
                         keywords=[],
                     )
                 )
+            if isinstance(t, ast.Name):
+                return ast.Assign(
+                    targets=[ast.Name(id=t.id, ctx=ast.Store())],
+                    value=ast.Call(
+                        func=ast.Name(id="__del_var", ctx=ast.Load()),
+                        args=[ast.Name(id=t.id, ctx=ast.Load())],
+                        keywords=[],
+                    ),
+                )
         return ast.Pass()
 
     def visit_Await(self, node: ast.Await) -> ast.AST:
@@ -2683,6 +2708,7 @@ class _ModernSyntaxPreDesugarer(ast.NodeTransformer):
             orelse=[self.visit(s) for s in getattr(node, "orelse", [])],
             finalbody=[self.visit(s) for s in getattr(node, "finalbody", [])],
         )
+        t._vela_trystar = True  # type: ignore[attr-defined]
         return ast.copy_location(t, node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
@@ -2885,6 +2911,16 @@ class _ModernSyntaxPreDesugarer(ast.NodeTransformer):
         if isinstance(node.func, ast.Name):
             if node.func.id in ("cast", "typing__cast") and len(node.args) == 2:
                 return node.args[1]
+            if node.func.id == "weakref__ref" and len(node.args) == 1:
+                node.args[0] = ast.Call(
+                    func=ast.Name(id="__ptr_to_int", ctx=ast.Load()),
+                    args=[node.args[0]],
+                    keywords=[],
+                )
+                return node
+            if node.func.id == "weakref__finalize" and len(node.args) == 2:
+                node.func = ast.Name(id="__set_finalizer", ctx=ast.Load())
+                return node
             if node.func.id in self.generic_funcs:
                 tmpl = copy.deepcopy(self.generic_funcs[node.func.id])
                 spec_name = self.counter.next(f"__gspec_{node.func.id}")

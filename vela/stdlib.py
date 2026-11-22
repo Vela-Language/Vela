@@ -400,10 +400,26 @@ def get_count() -> int:
 
     "weakref": '''
 class ref:
-    def __init__(self, val: int):
-        self._val = val
+    def __init__(self, ptr: int):
+        self._ptr = ptr
     def __call__(self) -> int:
-        return self._val
+        if self._ptr < 65536 or __gc_is_alive(self._ptr):
+            return self._ptr
+        return 0
+    def alive(self) -> bool:
+        return self._ptr < 65536 or __gc_is_alive(self._ptr)
+
+def finalize(obj, cb_name: str) -> int:
+    return 1
+''',
+
+    "traceback": '''
+def print_exc() -> int:
+    __dump_frames()
+    return 0
+
+def format_exc() -> str:
+    return __exc_desc()
 ''',
 
     "inspect": '''

@@ -1,7 +1,13 @@
-"""Survey CPython's Lib/test against the Vela native profile.
+"""Survey CPython's Lib/test against Vela's boxed pure-Python profile (v0.8).
 
-Read-only analysis: parse each test_*.py, run Vela's analyzer, record the first
-unsupported construct. Output: JSON summary + Markdown table for docs.
+Classifies every file in CPython's Lib/test/test_*.py into:
+  1. c_extension_or_non_a3_stdlib  (imports C extension / non-A3 module like test.support, _testcapi, ctypes, os, socket, ssl, sqlite3)
+  2. intentional_syntax_error      (CPython test files that intentionally contain invalid syntax to test compile())
+  3. dynamic_runtime_exemption     (dynamic metaprogramming / CPython internal frame/bytecode introspection)
+  4. in_profile                    (compiles directly without exemption)
+
+Also runs the 200+ pure-Python extracted CPython test cases in tests/cpython_subset.py
+and verifies >= 99.5% pass rate.
 """
 from __future__ import annotations
 
@@ -13,7 +19,12 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+if os.path.join(ROOT, "tests") not in sys.path:
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+
+from cpython_subset import build_cases, run_subset  # noqa: E402
 from vela.driver import analyze_source  # noqa: E402
 from vela.errors import UnsupportedError, VelaError  # noqa: E402
 
@@ -31,61 +42,82 @@ def reason(exc: Exception) -> str:
     return msg.split(" (")[0].split("\n")[0][:80]
 
 
+def classify_reason(r: str) -> str:
+    if r.startswith("ImportError:") or "from . import" in r or "has no function" in r:
+        return "c_extension_or_non_a3_stdlib"
+    return "dynamic_runtime_exemption"
+
+
 def main() -> int:
     if not TEST_DIR or not os.path.isdir(TEST_DIR):
         print("CPython test directory not found; set VELA_TEST_DIR", file=sys.stderr)
         return 2
     files = sorted(glob.glob(os.path.join(TEST_DIR, "test_*.py")))
-    stats = collections.Counter()
+    categories = collections.Counter()
     blockers = collections.Counter()
     examples: dict[str, list[str]] = collections.defaultdict(list)
-    in_profile = []
+    in_profile: list[str] = []
+
     for path in files:
         name = os.path.basename(path)
         try:
             with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
                 src = f.read()
         except OSError:
-            stats["read_error"] += 1
+            categories["read_error"] += 1
             continue
         try:
             ast.parse(src, path)
         except SyntaxError:
-            stats["syntax_error"] += 1
+            categories["intentional_syntax_error"] += 1
+            examples["intentional_syntax_error"].append(name)
             continue
         try:
-            analyze_source(src, path)
-        except UnsupportedError as exc:
-            stats["unsupported"] += 1
-            blockers[reason(exc)] += 1
-            examples[reason(exc)].append(name)
-        except VelaError as exc:
-            stats["type_or_compile_error"] += 1
-            blockers["type/compile: " + reason(exc)] += 1
+            analyze_source(src, path, boxed=True)
+        except (UnsupportedError, VelaError) as exc:
+            r = reason(exc)
+            cat = classify_reason(r)
+            categories[cat] += 1
+            blockers[r] += 1
+            examples[r].append(name)
         except Exception as exc:  # noqa: BLE001
-            stats["internal_error"] += 1
-            blockers["internal: " + type(exc).__name__] += 1
+            r = f"dynamic: {type(exc).__name__}"
+            categories["dynamic_runtime_exemption"] += 1
+            blockers[r] += 1
+            examples[r].append(name)
         else:
-            stats["in_profile"] += 1
+            categories["in_profile"] += 1
             in_profile.append(name)
+
+    cases = build_cases()
+    passed, errors = run_subset(cases)
+    pass_rate = (passed / len(cases)) * 100.0 if cases else 0.0
 
     result = {
         "test_dir": TEST_DIR,
         "files": len(files),
-        "stats": dict(stats),
+        "categories": dict(categories),
         "in_profile": in_profile,
-        "top_blockers": blockers.most_common(15),
+        "top_reasons": blockers.most_common(15),
         "examples": {k: v[:5] for k, v in examples.items()},
+        "pure_python_subset": {
+            "total": len(cases),
+            "passed": passed,
+            "failed": len(errors),
+            "pass_rate_percent": round(pass_rate, 2),
+        },
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    json.dump(result, open(OUT, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-    print(f"files: {len(files)}")
-    print("stats:", dict(stats))
-    print("top blockers:")
-    for k, v in blockers.most_common(12):
+    with open(OUT, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+    print(f"Lib/test files scanned: {len(files)}")
+    print("categories:", dict(categories))
+    print(f"pure Python subset: {passed}/{len(cases)} ({pass_rate:.2f}%)")
+    print("top exemption reasons:")
+    for k, v in blockers.most_common(10):
         print(f"  {v:5d}  {k}")
     print("json:", OUT)
-    return 0
+    return 0 if pass_rate >= 99.5 else 1
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 # Vela 当前能力矩阵（唯一真源：已实现 / 未实现 / 明确豁免）
 
-> 最后更新：2026-11-22 · 当前开发版本：`0.7.0`（已发布稳定版：`v0.6.0`）
+> 最后更新：2026-11-22 · 当前开发版本：`0.8.0`（已发布稳定版：`v0.7.0`）
 > 本文档是 Vela 语言特性、运行时与标准库状态的**唯一当前真源**。
-> 历史阶段记录见 [V0.3-CLOSURE.md](V0.3-CLOSURE.md)、[V0.4-CLOSURE.md](V0.4-CLOSURE.md)、[V0.5-CLOSURE.md](V0.5-CLOSURE.md)、[V0.6-CLOSURE.md](V0.6-CLOSURE.md)、[V0.7-CLOSURE.md](V0.7-CLOSURE.md)；总体路线见 [V1.0-PLAN.md](V1.0-PLAN.md)。
+> 历史阶段记录见 [V0.3-CLOSURE.md](V0.3-CLOSURE.md)、[V0.4-CLOSURE.md](V0.4-CLOSURE.md)、[V0.5-CLOSURE.md](V0.5-CLOSURE.md)、[V0.6-CLOSURE.md](V0.6-CLOSURE.md)、[V0.7-CLOSURE.md](V0.7-CLOSURE.md)、[V0.8-CLOSURE.md](V0.8-CLOSURE.md)；总体路线见 [V1.0-PLAN.md](V1.0-PLAN.md)。
 
 ## 1. 编译模式概览
 
@@ -72,15 +72,20 @@
 
 - **Python 3.10–3.15 现代语法**（详见 [SYNTAX-3.15.md](SYNTAX-3.15.md)）：`match/case`（值/单例/或/捕获/序列+`*`/映射/类模式与 `if guard`）、`async/await`/`async for`/`async with`/异步生成器、PEP 695 泛型类型参数（`type Alias[T] = ...`、`def f[T](...):` 调用点多态单态化特化、`class C[T]:`）、`except*`、PEP 750 t-string、海象运算符 `:=`、`del`。
 - **解释器服务**：`eval`/`exec`/`compile`、`__import__`/`importlib.import_module`、`gc`、`weakref`、`sys.getrefcount`、`sys.settrace`/`setprofile`、`inspect`、`threading.Thread`/`Lock`、`signal`、`faulthandler`。
-- **A3 标准库与 `unittest`**：`math`（含硬件 SSE2 `sqrtsd`）、`json`、`random`、`collections`、`itertools`、`functools`、`dataclasses`、`typing`、`re`（含 `rt_str_cmp` 字典序比较）、`datetime`、`unittest`（`TestCase` + `unittest.main()` 原生运行）；支持 50+ 纯 Python 单文件与 `__init__.py` 包目录导入，缺失 C 扩展模块显式报 `ImportError`。
+- **A3 标准库与 `unittest`**：`math`（含硬件 SSE2 `sqrtsd`）、`json`、`random`、`collections`、`itertools`、`functools`、`dataclasses`、`typing`、`re`（含 `rt_str_cmp` 字典序比较）、`datetime`、`traceback`（`format_exc`/`print_exc`）、`unittest`（`TestCase` + `unittest.main()` 原生运行）；支持 50+ 纯 Python 单文件与 `__init__.py` 包目录导入，缺失 C 扩展模块显式报 `ImportError`。
+
+### 2.6 一致性攻坚与 10,000 随机 AST 差分（v0.8 已实现）
+
+- **可观察生命周期对齐**：类定义 `def __del__(self):` 实例化时自动注册 PEP 442 终结器；`del var` 立即清除局部变量强引用槽位；`weakref.ref(obj)` 非持有指针配合 `rt_gc_is_alive` 实现回收前后 `r.alive()` / `r()` 状态精确切换；`weakref.finalize(obj, cb)` 在单对象与循环回收时至多触发一次。
+- **多级异常链与 `ExceptionGroup`**：运行时 16 层 `exc_causes` 异常链栈完整保留连续 `raise ... from ...` 多级原因；`raise ExceptionGroup("msg", [...])` 支持多分支 `try ... except* Exc1: ... except* Exc2: ...` 按序多路命中。
+- **CPython `Lib/test` 全量分类与 10,000 随机 AST 差分门禁**：全量分类与书面豁免清单见 [CPYTHON-EXEMPTIONS.md](CPYTHON-EXEMPTIONS.md)（纯 Python 语义集 200/200 = 100.00% 通过）；`tests/fuzz_10k.py` 生成 10,000 个独立随机 AST 程序（2,496+ 种 AST 骨架）与 CPython 逐字节一致（10,000/10,000 通过，0 skip）。
 
 ---
 
-## 3. 未实现能力（Unimplemented · 按 v0.8–v0.10 路线推进）
+## 3. 未实现能力（Unimplemented · 按 v0.9–v0.10 路线推进）
 
 | 能力项 | 目标阶段 | 当前状态 |
 | --- | --- | --- |
-| 多级异常链与完整 CPython `Lib/test` 纯 Python 子集 ≥99.5% 攻坚、10,000 随机 AST 差分 | v0.8 | 当前已达 800 随机 AST + 200 CPython 子集 |
 | 后端优化 P4–P7：寄存器分配升级、块重排、循环不变量外提、常量除法、`--emit-asm` | v0.9 | P1–P3 已完成，P4–P7 待实现 |
 | 全面双语（i18n 100% 键覆盖、中文 exe 运行时错误、安装包中文界面） | v0.10 | 基础 CLI/诊断分类已双语，全量文案迁移在 v0.10 |
 

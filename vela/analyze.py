@@ -627,8 +627,14 @@ class Analyzer:
             return
         if isinstance(node, ast.Raise) and self.boxed:
             exc = node.exc
+            if node.cause is not None:
+                self._infer(node.cause, env, None)
             if exc is not None:
                 if isinstance(exc, ast.Name):
+                    return
+                if isinstance(exc, ast.Call) and isinstance(exc.func, ast.Name) \
+                        and exc.func.id == "ExceptionGroup" and len(exc.args) == 2:
+                    self._infer(exc.args[0], env, STR)
                     return
                 if not (isinstance(exc, ast.Call) and isinstance(exc.func, ast.Name)
                         and len(exc.args) <= 1
@@ -1195,6 +1201,20 @@ class Analyzer:
             return NONE
         if name in ("__sys_gettrace", "__sys_getprofile"):
             return BOOL
+        if name == "__set_finalizer":
+            self._infer(node.args[0], env, None)
+            self._infer(node.args[1], env, None)
+            return NONE
+        if name == "__del_var":
+            return self._infer(node.args[0], env, None)
+        if name == "__ptr_to_int":
+            self._infer(node.args[0], env, None)
+            return INT
+        if name == "__gc_is_alive":
+            self._infer(node.args[0], env, INT)
+            return BOOL
+        if name == "__exc_desc":
+            return STR
         if name == "__module_func":
             return "func:" + node.args[0].value
         if name == "__modules_registry":

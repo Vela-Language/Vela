@@ -36,6 +36,9 @@ jobs:
       - name: CPython pure-Python subset differential gate (200 programs)
         run: python tests/cpython_subset.py
 
+      - name: Random AST 10,000-program differential fuzz gate
+        run: python tests/fuzz_10k.py
+
       - name: Build and run native executables
         run: |
           python -m vela check examples/fib.vl -v
