@@ -25,68 +25,68 @@
 <body>
   <header>
     <h1>Vela 性能对比</h1>
-    <div class="sub">Vela v0.9.0 · Windows x86-64 · 2026-11-27<br>
+    <div class="sub">Vela v1.0.0 · Windows x86-64 · 2026-11-27<br>
       同一份 Python 源码，Vela 编译为独立 PE32+；对照 CPython 3.15.2 /
       3.13.3 与 Cython 3.3.1。
       点击任意图片可查看原图；原始数据见
-      <a href="../peers/results-py3.15.json?v=v0.9.0-2026-11-27">peer JSON</a>、
-      <a href="../results-py315.json?v=v0.9.0-2026-11-27">heavy JSON</a>。</div>
+      <a href="../peers/results-py3.15.json?v=v1.0.0-2026-11-27">peer JSON</a>、
+      <a href="../results-py315.json?v=v1.0.0-2026-11-27">heavy JSON</a>。</div>
   </header>
   <div class="grid">
-      <a class="card" href="01_empty_call.png?v=v0.9.0-2026-11-27">
-         <img src="01_empty_call.png?v=v0.9.0-2026-11-27" alt="空函数调用">
+      <a class="card" href="01_empty_call.png?v=v1.0.0-2026-11-27">
+         <img src="01_empty_call.png?v=v1.0.0-2026-11-27" alt="空函数调用">
         <div class="meta"><strong>空函数调用</strong><span>1,000,000 次调用 × 20 轮</span></div>
       </a>
-      <a class="card" href="02_float_sum.png?v=v0.9.0-2026-11-27">
-         <img src="02_float_sum.png?v=v0.9.0-2026-11-27" alt="浮点累加">
+      <a class="card" href="02_float_sum.png?v=v1.0.0-2026-11-27">
+         <img src="02_float_sum.png?v=v1.0.0-2026-11-27" alt="浮点累加">
         <div class="meta"><strong>浮点累加</strong><span>1,000,000 次 double 加法 × 20 轮</span></div>
       </a>
-      <a class="card" href="03_mulmod.png?v=v0.9.0-2026-11-27">
-         <img src="03_mulmod.png?v=v0.9.0-2026-11-27" alt="乘模">
+      <a class="card" href="03_mulmod.png?v=v1.0.0-2026-11-27">
+         <img src="03_mulmod.png?v=v1.0.0-2026-11-27" alt="乘模">
         <div class="meta"><strong>乘模</strong><span>1,000,000 次 (r*7+13)%1000003 × 5 轮</span></div>
       </a>
-      <a class="card" href="04_branch.png?v=v0.9.0-2026-11-27">
-         <img src="04_branch.png?v=v0.9.0-2026-11-27" alt="分支">
+      <a class="card" href="04_branch.png?v=v1.0.0-2026-11-27">
+         <img src="04_branch.png?v=v1.0.0-2026-11-27" alt="分支">
         <div class="meta"><strong>分支</strong><span>10,000,000 次奇偶分支 × 2 轮</span></div>
       </a>
-      <a class="card" href="05_nested.png?v=v0.9.0-2026-11-27">
-         <img src="05_nested.png?v=v0.9.0-2026-11-27" alt="嵌套循环">
+      <a class="card" href="05_nested.png?v=v1.0.0-2026-11-27">
+         <img src="05_nested.png?v=v1.0.0-2026-11-27" alt="嵌套循环">
         <div class="meta"><strong>嵌套循环</strong><span>1,000×1,000 计数 × 20 轮</span></div>
       </a>
-      <a class="card" href="06_fib30.png?v=v0.9.0-2026-11-27">
-         <img src="06_fib30.png?v=v0.9.0-2026-11-27" alt="fib30 递归">
+      <a class="card" href="06_fib30.png?v=v1.0.0-2026-11-27">
+         <img src="06_fib30.png?v=v1.0.0-2026-11-27" alt="fib30 递归">
         <div class="meta"><strong>fib30 递归</strong><span>fib(30) × 5 轮</span></div>
       </a>
-      <a class="card" href="07_loop.png?v=v0.9.0-2026-11-27">
-         <img src="07_loop.png?v=v0.9.0-2026-11-27" alt="整数循环">
+      <a class="card" href="07_loop.png?v=v1.0.0-2026-11-27">
+         <img src="07_loop.png?v=v1.0.0-2026-11-27" alt="整数循环">
         <div class="meta"><strong>整数循环</strong><span>100,000,000 次累加 × 1 轮</span></div>
       </a>
-      <a class="card" href="08_fib.png?v=v0.9.0-2026-11-27">
-         <img src="08_fib.png?v=v0.9.0-2026-11-27" alt="fib32 递归">
+      <a class="card" href="08_fib.png?v=v1.0.0-2026-11-27">
+         <img src="08_fib.png?v=v1.0.0-2026-11-27" alt="fib32 递归">
         <div class="meta"><strong>fib32 递归</strong><span>fib(32) × 1 轮</span></div>
       </a>
-      <a class="card" href="09_collatz.png?v=v0.9.0-2026-11-27">
-         <img src="09_collatz.png?v=v0.9.0-2026-11-27" alt="Collatz">
+      <a class="card" href="09_collatz.png?v=v1.0.0-2026-11-27">
+         <img src="09_collatz.png?v=v1.0.0-2026-11-27" alt="Collatz">
         <div class="meta"><strong>Collatz</strong><span>300,000 个起点 × 1 轮</span></div>
       </a>
-      <a class="card" href="10_primes.png?v=v0.9.0-2026-11-27">
-         <img src="10_primes.png?v=v0.9.0-2026-11-27" alt="素数计数">
+      <a class="card" href="10_primes.png?v=v1.0.0-2026-11-27">
+         <img src="10_primes.png?v=v1.0.0-2026-11-27" alt="素数计数">
         <div class="meta"><strong>素数计数</strong><span>200,000 个整数试除 × 1 轮</span></div>
       </a>
-      <a class="card" href="11_list_ops.png?v=v0.9.0-2026-11-27">
-         <img src="11_list_ops.png?v=v0.9.0-2026-11-27" alt="列表索引与累加">
+      <a class="card" href="11_list_ops.png?v=v1.0.0-2026-11-27">
+         <img src="11_list_ops.png?v=v1.0.0-2026-11-27" alt="列表索引与累加">
         <div class="meta"><strong>列表索引与累加</strong><span>100,000 次 list 索引求和 × 20 轮</span></div>
       </a>
-      <a class="card" href="12_dict_ops.png?v=v0.9.0-2026-11-27">
-         <img src="12_dict_ops.png?v=v0.9.0-2026-11-27" alt="字典键值查找">
+      <a class="card" href="12_dict_ops.png?v=v1.0.0-2026-11-27">
+         <img src="12_dict_ops.png?v=v1.0.0-2026-11-27" alt="字典键值查找">
         <div class="meta"><strong>字典键值查找</strong><span>100,000 次 dict 键值读取 × 20 轮</span></div>
       </a>
-      <a class="card" href="13_str_ops.png?v=v0.9.0-2026-11-27">
-         <img src="13_str_ops.png?v=v0.9.0-2026-11-27" alt="字符串匹配与长度">
+      <a class="card" href="13_str_ops.png?v=v1.0.0-2026-11-27">
+         <img src="13_str_ops.png?v=v1.0.0-2026-11-27" alt="字符串匹配与长度">
         <div class="meta"><strong>字符串匹配与长度</strong><span>100,000 次 str 相等/长度 × 20 轮</span></div>
       </a>
-      <a class="card" href="14_class_oop.png?v=v0.9.0-2026-11-27">
-         <img src="14_class_oop.png?v=v0.9.0-2026-11-27" alt="面向对象方法分派">
+      <a class="card" href="14_class_oop.png?v=v1.0.0-2026-11-27">
+         <img src="14_class_oop.png?v=v1.0.0-2026-11-27" alt="面向对象方法分派">
         <div class="meta"><strong>面向对象方法分派</strong><span>100,000 次对象方法调用 × 20 轮</span></div>
       </a>
   </div>

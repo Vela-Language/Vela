@@ -1,8 +1,8 @@
 # Vela 当前能力矩阵（唯一真源：已实现 / 未实现 / 明确豁免）
 
-> 最后更新：2026-11-27 · 当前开发版本：`0.10.0`（已发布稳定版：`v0.9.0`）
+> 最后更新：2026-11-27 · 当前版本：`1.0.0`（已发布稳定版：`v0.10.0`）
 > 本文档是 Vela 语言特性、运行时与标准库状态的**唯一当前真源**。
-> 历史阶段记录见 [V0.3-CLOSURE.md](V0.3-CLOSURE.md)、[V0.4-CLOSURE.md](V0.4-CLOSURE.md)、[V0.5-CLOSURE.md](V0.5-CLOSURE.md)、[V0.6-CLOSURE.md](V0.6-CLOSURE.md)、[V0.7-CLOSURE.md](V0.7-CLOSURE.md)、[V0.8-CLOSURE.md](V0.8-CLOSURE.md)、[V0.9-CLOSURE.md](V0.9-CLOSURE.md)、[V0.10-CLOSURE.md](V0.10-CLOSURE.md)；总体路线见 [V1.0-PLAN.md](V1.0-PLAN.md)。
+> 历史阶段记录见 [V0.3-CLOSURE.md](V0.3-CLOSURE.md)、[V0.4-CLOSURE.md](V0.4-CLOSURE.md)、[V0.5-CLOSURE.md](V0.5-CLOSURE.md)、[V0.6-CLOSURE.md](V0.6-CLOSURE.md)、[V0.7-CLOSURE.md](V0.7-CLOSURE.md)、[V0.8-CLOSURE.md](V0.8-CLOSURE.md)、[V0.9-CLOSURE.md](V0.9-CLOSURE.md)、[V0.10-CLOSURE.md](V0.10-CLOSURE.md)、[V1.0-CLOSURE.md](V1.0-CLOSURE.md)；已知差异清单见 [KNOWN-DIFFERENCES.md](KNOWN-DIFFERENCES.md)；总体路线见 [V1.0-PLAN.md](V1.0-PLAN.md)。
 
 ## 1. 编译模式概览
 
