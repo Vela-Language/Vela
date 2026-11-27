@@ -60,17 +60,27 @@ class Allocation:
 
 
 def _block_succs(fn: Function) -> dict[str, list[str]]:
+    block_labels = {b.label for b in fn.blocks}
+    handler_labels = [
+        ins.args[0]
+        for b in fn.blocks
+        for ins in b.instrs
+        if ins.op == "addr" and ins.args[0] in block_labels
+    ]
     succ: dict[str, list[str]] = {}
     for b in fn.blocks:
         t = b.terminator
-        if t is None:
-            succ[b.label] = []
-        elif t.op == "jmp":
-            succ[b.label] = [t.args[0]]
-        elif t.op == "br":
-            succ[b.label] = [t.args[1], t.args[2]]
-        else:
-            succ[b.label] = []
+        s: list[str] = []
+        if t is not None:
+            if t.op == "jmp":
+                s.append(t.args[0])
+            elif t.op == "br":
+                s.extend((t.args[1], t.args[2]))
+        if handler_labels and any(ins.op == "call" for ins in b.instrs):
+            for hl in handler_labels:
+                if hl not in s:
+                    s.append(hl)
+        succ[b.label] = s
     return succ
 
 
@@ -178,18 +188,92 @@ def _scan(items, pool, alloc: Allocation) -> None:
             alloc.slot_count += 1
 
 
+def is_imm_operand(ins, v: VReg, const_ints: dict[VReg, int]) -> bool:
+    if v not in const_ints:
+        return False
+    val = const_ints[v]
+    if ins.op == "bin":
+        op, va, vb = ins.args
+        if vb is not v or va is v:
+            return False
+        if op in ("add", "sub", "mul", "and", "or", "xor"):
+            return -2**31 <= val <= 2**31 - 1
+        if op in ("shl", "shr"):
+            return 0 <= val <= 63
+        if op in ("idiv_c", "imod_c"):
+            return 2 <= val < (1 << 62)
+        return False
+    if ins.op == "cmp":
+        op, va, vb = ins.args
+        if vb is not v or va is v:
+            return False
+        if va.ty == FLOAT or vb.ty == FLOAT:
+            return False
+        return -2**31 <= val <= 2**31 - 1
+    return False
+
+
+def find_imm_only_vregs(fn: Function) -> tuple[dict[VReg, int], set[VReg]]:
+    defs: dict[VReg, object] = {}
+    def_counts: dict[VReg, int] = {}
+    for b in fn.blocks:
+        for ins in b.instrs:
+            if ins.dst is not None:
+                def_counts[ins.dst] = def_counts.get(ins.dst, 0) + 1
+                defs[ins.dst] = ins
+    const_ints: dict[VReg, int] = {
+        v: int(ins.args[0])  # type: ignore[attr-defined]
+        for v, ins in defs.items()
+        if def_counts[v] == 1 and ins.op == "const" and v.ty in (INT, BOOL)  # type: ignore[attr-defined]
+    }
+    if not const_ints:
+        return {}, set()
+    used_any: set[VReg] = set()
+    non_imm: set[VReg] = set()
+    for b in fn.blocks:
+        for ins in b.instrs:
+            for v in _uses(ins):
+                if v is None or v not in const_ints:
+                    continue
+                used_any.add(v)
+                if not is_imm_operand(ins, v, const_ints):
+                    non_imm.add(v)
+    return const_ints, (used_any - non_imm)
+
+
 def allocate(fn: Function) -> Allocation:
     live_in, live_out, by_label = analyse_liveness(fn)
     intervals = build_intervals(fn, live_in, live_out, by_label)
+    _, imm_only = find_imm_only_vregs(fn)
     alloc = Allocation()
     alloc.intervals = intervals
     alloc.live_in = live_in
     idx = 0
+    def_counts: dict[VReg, int] = {}
+    block_labels = set(by_label)
+    handler_labels = [
+        ins.args[0]
+        for b in fn.blocks
+        for ins in b.instrs
+        if ins.op == "addr" and ins.args[0] in block_labels
+    ]
     for b in fn.blocks:
         for ins in b.instrs:
             alloc.ins_pos[id(ins)] = idx
             idx += 1
-    gpr_items = [(v, iv) for v, iv in intervals.items() if v.ty in GPR_CLASS]
+            if ins.dst is not None:
+                def_counts[ins.dst] = def_counts.get(ins.dst, 0) + 1
+    handler_live: set[VReg] = set()
+    for hl in handler_labels:
+        handler_live |= live_in.get(hl, set())
+    for v in sorted(handler_live, key=lambda x: x.id):
+        if v.ty in GPR_CLASS and def_counts.get(v, 0) > 1 and v not in imm_only:
+            alloc.slots[v] = alloc.slot_count
+            alloc.slot_count += 1
+    gpr_items = [
+        (v, iv) for v, iv in intervals.items()
+        if v.ty in GPR_CLASS and v not in alloc.slots and v not in imm_only
+    ]
     xmm_items = [(v, iv) for v, iv in intervals.items() if v.ty in XMM_CLASS]
     _scan(gpr_items, ALLOC_GPR, alloc)
     _scan(xmm_items, ALLOC_XMM, alloc)

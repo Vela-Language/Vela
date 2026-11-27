@@ -36,6 +36,9 @@ class CompileResult:
     exe: bytes
     stats: CompileStats
     program: Program
+    labels: dict[str, int] | None = None
+    code_bytes: bytes = b""
+    allocs: dict | None = None
 
 
 def compile_source(source: str, filename: str = "<input>", boxed: bool = False,
@@ -94,7 +97,8 @@ def compile_source(source: str, filename: str = "<input>", boxed: bool = False,
     stats.code_bytes = len(asm.b)
     stats.image_bytes = len(exe)
     stats.seconds = time.perf_counter() - t0
-    return CompileResult(exe=exe, stats=stats, program=program)
+    return CompileResult(exe=exe, stats=stats, program=program,
+                         labels=dict(asm.labels), code_bytes=bytes(asm.b), allocs=allocs)
 
 
 def compile_file(path: str, boxed: bool = False, dynamic_int: bool = False,

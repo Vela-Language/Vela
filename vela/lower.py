@@ -1486,6 +1486,11 @@ class FuncBuilder:
             r = self.fn.new_vreg(INT, "mod")
             self.cur.add("bin", r, "and", a, self.const_int(const - 1))
             return r
+        if const is not None and 2 <= const < (1 << 62):
+            b = self.coerce(right, INT)
+            r = self.fn.new_vreg(INT, "floordiv" if op == "floordiv" else "mod")
+            self.cur.add("bin", r, "idiv_c" if op == "floordiv" else "imod_c", a, b)
+            return r
         b = self.coerce(right, INT)
         return self.call_rt("rt_idiv" if op == "floordiv" else "rt_imod", [a, b], INT)
 

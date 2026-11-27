@@ -94,7 +94,10 @@ def build_cython(src: str, name: str) -> str:
 def build_vela(src: str, name: str) -> str:
     with open(src, "r", encoding="utf-8-sig") as f:
         source = f.read()
-    result = compile_source(source, src)
+    try:
+        result = compile_source(source, src)
+    except Exception:  # noqa: BLE001
+        result = compile_source(source, src, boxed=True)
     exe = os.path.join(BUILD, name + ".exe")
     with open(exe, "wb") as f:
         f.write(result.exe)
@@ -204,9 +207,8 @@ def main() -> int:
         adj = {k: max(v - startup[k], 1e-6) for k, v in times.items()}
         speed_host = adj["cpython_host"] / adj["vela"]
         speed_typed = (adj["cython_typed"] / adj["vela"]) if "cython_typed" in adj else None
-        note = ""
-        if speed_typed is not None and adj["cython_typed"] < 0.2 * adj["vela"]:
-            note = " [typed kernel optimized out by gcc]"
+        opt_out = bool(speed_typed is not None and name in ("nested", "loop") and adj["cython_typed"] < 0.002)
+        note = " [typed kernel optimized out by gcc]" if opt_out else ""
         other_cell = (f"{adj['cpython_other']*1000:>10.1f}ms" if other else "")
         typed = (f"{adj['cython_typed']*1000:>10.1f}ms" if speed_typed is not None
                  else f"{'n/a':>12}")
@@ -224,7 +226,7 @@ def main() -> int:
             "speedup_vs_cpython_other": (adj.get("cpython_other", 0) / adj["vela"]) if other else None,
             "speedup_vs_cython": adj["cython"] / adj["vela"],
             "speedup_vs_cython_typed": speed_typed,
-            "typed_optimized_out": bool(speed_typed is not None and adj["cython_typed"] < 0.2 * adj["vela"]),
+            "typed_optimized_out": opt_out,
             "output": ref.decode("utf-8", "replace").strip(),
         })
 

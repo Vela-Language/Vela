@@ -10,7 +10,7 @@ import struct
 
 from .ir import BOOL, FLOAT, INT, NONE, OBJ, STR, VReg
 from .pe import align_up
-from .regalloc import _uses
+from .regalloc import _uses, find_imm_only_vregs, is_imm_operand
 from .x64 import Asm, GPR_POOL, XMM_POOL
 
 GP_ARGS = ("rcx", "rdx", "r8", "r9")
@@ -19,6 +19,7 @@ SCRATCH_GPR = ("rax", "r10", "r11")
 SCRATCH_XMM = ("xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5")
 
 CMP_CC = {"eq": "e", "ne": "ne", "lt": "l", "le": "le", "gt": "g", "ge": "ge"}
+INV_CC = {"e": "ne", "ne": "e", "l": "ge", "le": "g", "g": "le", "ge": "l"}
 FCMP_IMM = {"eq": 0, "ne": 4, "lt": 1, "le": 2, "gt": 1, "ge": 2}
 
 
@@ -43,7 +44,9 @@ class FuncEmitter:
         self.gc_frame_disp = 0
         self.obj_slots_base_disp = 0
         self.cur_block_label = ""
+        self.next_block_label = ""
         self.frame = 0
+        self.const_ints, self.imm_only = find_imm_only_vregs(fn)
         self.has_calls = any(ins.op in ("call", "print")
                              for block in fn.blocks for ins in block.instrs)
         self.use_count: dict[VReg, int] = {}
@@ -173,10 +176,7 @@ class FuncEmitter:
         return f"{hint}_{n}"
 
     def _overflow_check(self) -> None:
-        ok = self._next_label("ovf")
-        self.a.jcc("no", ok)
-        self.a.jmp(self.rt.OVERFLOW)
-        self.a.bind(ok)
+        self.a.jcc("o", self.rt.OVERFLOW)
 
     # -- function ----------------------------------------------------------
     def _alloc_stack(self) -> None:
@@ -224,8 +224,12 @@ class FuncEmitter:
                 a.mov_mi("rbp", self.gc_frame_disp + 24, len(self.obj_vregs))
                 a.lea("rax", "rbp", self.gc_frame_disp)
                 a.mov_mr("r11", 0, "rax")
-        for block in self.fn.blocks:
+        n_blocks = len(self.fn.blocks)
+        for b_idx, block in enumerate(self.fn.blocks):
             self.cur_block_label = block.label
+            self.next_block_label = (
+                self.fn.blocks[b_idx + 1].label if b_idx + 1 < n_blocks else self.epi
+            )
             a.bind(block.label)
             instrs = block.instrs
             i = 0
@@ -278,7 +282,8 @@ class FuncEmitter:
         elif op == "cmp":
             self.emit_cmp(ins)
         elif op == "jmp":
-            self.a.jmp(ins.args[0])
+            if ins.args[0] != self.next_block_label:
+                self.a.jmp(ins.args[0])
         elif op == "br":
             self.emit_br(ins)
         elif op == "call":
@@ -318,6 +323,8 @@ class FuncEmitter:
 
     def emit_const(self, ins) -> None:
         v = ins.dst
+        if v in self.imm_only:
+            return
         value = ins.args[0]
         a = self.a
         if v.ty == FLOAT:
@@ -359,11 +366,13 @@ class FuncEmitter:
         if op.startswith("f"):
             self.emit_bin_float(op, ins.dst, a, b)
         elif op in ("shl", "shr"):
-            self.emit_shift(op, ins.dst, a, b)
+            self.emit_shift(op, ins.dst, a, b, ins)
+        elif op in ("idiv_c", "imod_c"):
+            self.emit_divmod_const(op, ins.dst, a, b)
         else:
-            self.emit_bin_int(op, ins.dst, a, b)
+            self.emit_bin_int(op, ins.dst, a, b, ins)
 
-    def emit_bin_int(self, op: str, dst: VReg, va: VReg, vb: VReg) -> None:
+    def emit_bin_int(self, op: str, dst: VReg, va: VReg, vb: VReg, ins=None) -> None:
         a = self.a
         used: set[str] = set()
         if self._is_reg(dst):
@@ -374,6 +383,18 @@ class FuncEmitter:
             used.add(R)
         A = self._read_gpr(va, used)
         used.add(A)
+        if ins is not None and is_imm_operand(ins, vb, self.const_ints):
+            imm = self.const_ints[vb]
+            if op == "mul":
+                a.imul_rri(R, A, imm)
+                self._overflow_check()
+            else:
+                if R != A:
+                    a.mov_rr(R, A)
+                self._alu_imm(op, R, imm)
+            if not self._is_reg(dst):
+                self._write_gpr(dst, R)
+            return
         B = self._read_gpr(vb, used)
         used.add(B)
         if R != A:
@@ -389,6 +410,23 @@ class FuncEmitter:
             self._alu(op, R, B)
         if not self._is_reg(dst):
             self._write_gpr(dst, R)
+
+    def _alu_imm(self, op: str, dst: str, imm: int) -> None:
+        a = self.a
+        if op == "add":
+            a.add_ri(dst, imm)
+            self._overflow_check()
+        elif op == "sub":
+            a.sub_ri(dst, imm)
+            self._overflow_check()
+        elif op == "and":
+            a.and_ri(dst, imm)
+        elif op == "or":
+            a.or_ri(dst, imm)
+        elif op == "xor":
+            a.xor_ri(dst, imm)
+        else:  # pragma: no cover
+            raise AssertionError(op)
 
     def _alu(self, op: str, dst: str, src: str) -> None:
         a = self.a
@@ -410,7 +448,49 @@ class FuncEmitter:
         else:  # pragma: no cover
             raise AssertionError(op)
 
-    def emit_shift(self, op: str, dst: VReg, va: VReg, vb: VReg) -> None:
+    def emit_divmod_const(self, op: str, dst: VReg, va: VReg, vb: VReg) -> None:
+        """P7: Branchless signed 64-bit floor division/modulo by positive constant d >= 2."""
+        a = self.a
+        d = self.const_ints[vb]
+        k = d.bit_length() - 1
+        magic = (1 << (64 + k)) // d + 1
+        if self._is_reg(va):
+            src_reg = self._reg(va)
+            a.mov_rr("rax", src_reg)
+            a.mov_rr("r10", src_reg)
+        else:
+            src_reg = "r10"
+            a.mov_rm("rax", "rbp", self._disp(va))
+            a.mov_rr("r10", "rax")
+        a.mov_ri("r11", magic)
+        a.sar_imm("r10", 63)
+        a.xor_rr("rax", "r10")
+        a.mul_r("r11")
+        if k > 0:
+            a.shr_imm("rdx", k)
+        a.xor_rr("rdx", "r10")
+        if op == "idiv_c":
+            self._write_gpr(dst, "rdx")
+            return
+        if -2**31 <= d <= 2**31 - 1:
+            a.imul_rri("rdx", "rdx", d)
+        else:
+            a.mov_ri("r11", d)
+            a.imul_rr("rdx", "r11")
+        if self._is_reg(dst) and self._is_reg(va):
+            R = self._reg(dst)
+            if R != src_reg:
+                a.mov_rr(R, src_reg)
+            a.sub_rr(R, "rdx")
+        else:
+            if self._is_reg(va):
+                a.mov_rr("rax", src_reg)
+            else:
+                a.mov_rm("rax", "rbp", self._disp(va))
+            a.sub_rr("rax", "rdx")
+            self._write_gpr(dst, "rax")
+
+    def emit_shift(self, op: str, dst: VReg, va: VReg, vb: VReg, ins=None) -> None:
         a = self.a
         used: set[str] = set()
         if self._is_reg(dst):
@@ -421,11 +501,23 @@ class FuncEmitter:
             used.add(R)
         A = self._read_gpr(va, used)
         used.add(A)
-        if R != A:
-            a.mov_rr(R, A)
+        if ins is not None and is_imm_operand(ins, vb, self.const_ints):
+            imm = self.const_ints[vb]
+            if R != A:
+                a.mov_rr(R, A)
+            if imm > 0:
+                if op == "shl":
+                    a.shl_imm(R, imm)
+                else:
+                    a.sar_imm(R, imm)
+            if not self._is_reg(dst):
+                self._write_gpr(dst, R)
+            return
         B = self._read_gpr(vb, used | {R})
         if B != "rcx":
             a.mov_rr("rcx", B)
+        if R != A:
+            a.mov_rr(R, A)
         if op == "shl":
             a.shl_cl(R)
         else:
@@ -445,18 +537,24 @@ class FuncEmitter:
         A = self._read_xmm(va, used)
         used.add(A)
         B = self._read_xmm(vb, used)
+        used.add(B)
+        target = R
         if R != A:
-            a.movsd_rr(R, A)
+            if R == B:
+                target = next(r for r in SCRATCH_XMM if r not in used)
+            a.movsd_rr(target, A)
         if op == "fadd":
-            a.addsd(R, B)
+            a.addsd(target, B)
         elif op == "fsub":
-            a.subsd(R, B)
+            a.subsd(target, B)
         elif op == "fmul":
-            a.mulsd(R, B)
+            a.mulsd(target, B)
         elif op == "fdiv":
-            a.divsd(R, B)
+            a.divsd(target, B)
         else:  # pragma: no cover
             raise AssertionError(op)
+        if target != R:
+            a.movsd_rr(R, target)
         if not self._is_reg(dst):
             self._write_xmm(dst, R)
 
@@ -581,8 +679,15 @@ class FuncEmitter:
             self._write_gpr(dst, "rax")
             return
         A = self._read_gpr(a, set())
-        B = self._read_gpr(b, {A})
-        asm.cmp_rr(A, B)
+        if is_imm_operand(ins, b, self.const_ints):
+            imm = self.const_ints[b]
+            if imm == 0 and op in ("eq", "ne"):
+                asm.test_rr(A, A)
+            else:
+                asm.cmp_ri(A, imm)
+        else:
+            B = self._read_gpr(b, {A})
+            asm.cmp_rr(A, B)
         asm.setcc(CMP_CC[op], "rax")
         asm.movzx8("rax", "rax")
         self._write_gpr(dst, "rax")
@@ -590,17 +695,36 @@ class FuncEmitter:
     def emit_cmp_branch(self, ins, br) -> None:
         op, va, vb = ins.args
         A = self._read_gpr(va, set())
-        B = self._read_gpr(vb, {A})
-        self.a.cmp_rr(A, B)
-        self.a.jcc(CMP_CC[op], br.args[1])
-        self.a.jmp(br.args[2])
+        if is_imm_operand(ins, vb, self.const_ints):
+            imm = self.const_ints[vb]
+            if imm == 0 and op in ("eq", "ne"):
+                self.a.test_rr(A, A)
+            else:
+                self.a.cmp_ri(A, imm)
+        else:
+            B = self._read_gpr(vb, {A})
+            self.a.cmp_rr(A, B)
+        then_l, else_l = br.args[1], br.args[2]
+        cc = CMP_CC[op]
+        if then_l == self.next_block_label:
+            self.a.jcc(INV_CC[cc], else_l)
+        elif else_l == self.next_block_label:
+            self.a.jcc(cc, then_l)
+        else:
+            self.a.jcc(cc, then_l)
+            self.a.jmp(else_l)
 
     def emit_br(self, ins) -> None:
         cond, then_l, else_l = ins.args
         R = self._read_gpr(cond, set())
         self.a.test_rr(R, R)
-        self.a.jcc("ne", then_l)
-        self.a.jmp(else_l)
+        if then_l == self.next_block_label:
+            self.a.jcc("e", else_l)
+        elif else_l == self.next_block_label:
+            self.a.jcc("ne", then_l)
+        else:
+            self.a.jcc("ne", then_l)
+            self.a.jmp(else_l)
 
     def emit_call(self, ins) -> None:
         label = ins.args[0]
@@ -651,7 +775,8 @@ class FuncEmitter:
                 src = self._read_gpr(val, {"rax"})
                 if src != "rax":
                     self.a.mov_rr("rax", src)
-        self.a.jmp(self.epi)
+        if self.next_block_label != self.epi:
+            self.a.jmp(self.epi)
 
     def emit_print(self, ins) -> None:
         kind, v = ins.args

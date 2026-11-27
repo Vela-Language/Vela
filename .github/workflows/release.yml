@@ -89,14 +89,45 @@ jobs:
       - name: Write release notes
         if: steps.check.outputs.skip != 'true'
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $display = "${{ steps.meta.outputs.display }}"
+          $base = "${{ steps.meta.outputs.base }}"
           $channel = "${{ steps.meta.outputs.channel }}"
+          $prevLatest = (gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name 2>$null)
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($prevLatest)) {
+            $prevLatest = ""
+          } else {
+            $prevLatest = $prevLatest.Trim()
+          }
+          $changesLines = @()
+          if ($prevLatest -ne "" -and $prevLatest -ne "v$display") {
+            $changesLines += "### 自上一正式版 ($prevLatest) 以来的更新 / Changes since $prevLatest"
+            $changesLines += ""
+            $commits = @(git log "$prevLatest..HEAD" --no-merges --pretty=format:"- %s (``%h``)" 2>$null |
+              Where-Object { $_ -notmatch "\[skip ci\]" -and $_ -notmatch "升级开发版本到" })
+            if ($commits.Count -gt 0) {
+              $changesLines += $commits
+              $changesLines += ""
+            }
+          }
+          $verParts = $base -split '\.'
+          if ($verParts.Count -ge 2) {
+            $closureDoc = "docs/V$($verParts[0]).$($verParts[1])-CLOSURE.md"
+            if (Test-Path $closureDoc) {
+              $changesLines += "### 本阶段交付摘要 ($closureDoc)"
+              $changesLines += ""
+              $changesLines += Get-Content $closureDoc -Encoding utf8
+              $changesLines += ""
+            }
+          }
           $lines = @(
             "## Vela $display",
             "",
             "Automated **$channel** build from branch ``${{ github.ref_name }}`` at commit ``${{ github.sha }}``.",
-            "",
+            ""
+          ) + $changesLines + @(
             "### Artifacts",
             "- ``vela-$display-windows-x86_64.tar.gz`` - compiler, examples and docs",
             "- ``vela-$display-setup.exe`` - Windows x86-64 installer (Inno Setup)",
@@ -109,6 +140,9 @@ jobs:
             '```powershell',
             "python -m unittest discover -s tests",
             "python tests\differential.py",
+            "python tests\corpus_scale.py",
+            "python tests\cpython_subset.py",
+            "python tests\fuzz_10k.py",
             '```',
             "",
             "Apache-2.0"

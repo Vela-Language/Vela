@@ -319,9 +319,14 @@ class Asm:
     def _alu_ri(self, ext: int, dst: str | int, imm: int) -> None:
         d = r(dst)
         self._rex(1, 0, 0, d)
-        self.byte(0x81)
-        self._modrm(0b11, ext, d)
-        self.i32(imm)
+        if -128 <= imm <= 127:
+            self.byte(0x83)
+            self._modrm(0b11, ext, d)
+            self.byte(imm & 0xFF)
+        else:
+            self.byte(0x81)
+            self._modrm(0b11, ext, d)
+            self.i32(imm)
 
     def add_rr(self, dst, src): self._alu_rr(0x01, dst, src)
     def or_rr(self, dst, src): self._alu_rr(0x09, dst, src)
@@ -362,6 +367,12 @@ class Asm:
         self._rex(1, 0, 0, s_)
         self.byte(0xF7)
         self._modrm(0b11, 6, s_)
+
+    def mul_r(self, src) -> None:
+        s_ = r(src)
+        self._rex(1, 0, 0, s_)
+        self.byte(0xF7)
+        self._modrm(0b11, 4, s_)
 
     def neg_r(self, dst) -> None:
         d = r(dst)

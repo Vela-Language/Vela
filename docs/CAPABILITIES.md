@@ -1,8 +1,8 @@
 # Vela 当前能力矩阵（唯一真源：已实现 / 未实现 / 明确豁免）
 
-> 最后更新：2026-11-22 · 当前开发版本：`0.8.0`（已发布稳定版：`v0.7.0`）
+> 最后更新：2026-11-27 · 当前开发版本：`0.9.0`（已发布稳定版：`v0.8.0`）
 > 本文档是 Vela 语言特性、运行时与标准库状态的**唯一当前真源**。
-> 历史阶段记录见 [V0.3-CLOSURE.md](V0.3-CLOSURE.md)、[V0.4-CLOSURE.md](V0.4-CLOSURE.md)、[V0.5-CLOSURE.md](V0.5-CLOSURE.md)、[V0.6-CLOSURE.md](V0.6-CLOSURE.md)、[V0.7-CLOSURE.md](V0.7-CLOSURE.md)、[V0.8-CLOSURE.md](V0.8-CLOSURE.md)；总体路线见 [V1.0-PLAN.md](V1.0-PLAN.md)。
+> 历史阶段记录见 [V0.3-CLOSURE.md](V0.3-CLOSURE.md)、[V0.4-CLOSURE.md](V0.4-CLOSURE.md)、[V0.5-CLOSURE.md](V0.5-CLOSURE.md)、[V0.6-CLOSURE.md](V0.6-CLOSURE.md)、[V0.7-CLOSURE.md](V0.7-CLOSURE.md)、[V0.8-CLOSURE.md](V0.8-CLOSURE.md)、[V0.9-CLOSURE.md](V0.9-CLOSURE.md)；总体路线见 [V1.0-PLAN.md](V1.0-PLAN.md)。
 
 ## 1. 编译模式概览
 
@@ -15,15 +15,20 @@
 
 ---
 
-## 2. 已实现能力（Implemented · v0.1–v0.6 已交付并纳入 CI 门禁）
+## 2. 已实现能力（Implemented · v0.1–v0.9 已交付并纳入 CI 门禁）
 
-### 2.1 后端、PE 与优化管线
+### 2.1 后端、PE 与优化管线（P1–P7 全管线 + `--emit-asm`）
 
 - **自有 x86-64 编码器与 PE32+ 直出**（`vela/x64.py`、`vela/pe.py`）：不依赖 LLVM、MSVC 或外部链接器。
 - **Win64 ABI 与任意参数个数**：前 4 个参数走寄存器（`rcx/rdx/r8/r9` 或 `xmm0..xmm3`），第 5 个及以上参数走栈槽 `[rsp + 32 + (i - 4) * 8]`。
 - **P1 常量折叠 + 代数化简 + 死代码消除**（`vela/opt.py`）。
-- **P2 函数内联全覆盖**（`vela/inline.py`）：非递归函数全内联，递归函数深度 1 展开。
+- **P2 函数内联全覆盖**（`vela/inline.py`）：非递归函数全内联，自递归数值函数深度 3 自展开 + 调用点深度 1 展开。
 - **P3 栈帧优化**（`vela/emit.py`）：叶子函数免帧、按需影子空间、>4 KiB 大栈帧逐页探测。
+- **P4 寄存器拷贝接合 + 32 位立即数直编 + 内联装箱/拆箱消除**（`vela/opt.py`、`vela/regalloc.py`、`vela/emit.py`）。
+- **P5 跳转链折叠 + 循环冷出口外置 + 落空跳转消除与直通 `jo`**（`vela/opt.py`、`vela/emit.py`）。
+- **P6 支配校验 LICM + 归纳变量闭式归约 + 4x 循环展开 + LCG 四步复合 + 奇偶分支无分支化**（`vela/opt.py`）。
+- **P7 无分支 64 位魔数乘法常量整除/取模**（`idiv_c`/`imod_c`）与变量除数冷分支外置（`vela/lower.py`、`vela/emit.py`、`vela/runtime.py`）。
+- **`--emit-asm` 汇编与符号偏移清单**（`vela/ir_dump.py`、`vela/cli.py`）：输出函数/基本块 `.text` 偏移、寄存器分配表与机器码字节流。
 
 ### 2.2 运行时对象模型与精确 GC（`--boxed` / `--boxed-dyn`）
 
@@ -82,11 +87,10 @@
 
 ---
 
-## 3. 未实现能力（Unimplemented · 按 v0.9–v0.10 路线推进）
+## 3. 未实现能力（Unimplemented · 按 v0.10 路线推进）
 
 | 能力项 | 目标阶段 | 当前状态 |
 | --- | --- | --- |
-| 后端优化 P4–P7：寄存器分配升级、块重排、循环不变量外提、常量除法、`--emit-asm` | v0.9 | P1–P3 已完成，P4–P7 待实现 |
 | 全面双语（i18n 100% 键覆盖、中文 exe 运行时错误、安装包中文界面） | v0.10 | 基础 CLI/诊断分类已双语，全量文案迁移在 v0.10 |
 
 ---

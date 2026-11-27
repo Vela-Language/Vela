@@ -11,7 +11,7 @@ import time
 from . import __version__, i18n
 from .driver import analyze_source, compile_file, compile_source
 from .errors import UnsupportedError, VelaError
-from .ir_dump import dump_program
+from .ir_dump import dump_asm, dump_program
 
 
 
@@ -37,7 +37,7 @@ def _print_stats(result) -> None:
 
 def _parse(argv: list[str]):
     opts = {"output": None, "strict": False, "stats": False, "emit_ir": False,
-            "verbose": False, "boxed": False, "dynamic_int": False,
+            "emit_asm": False, "verbose": False, "boxed": False, "dynamic_int": False,
             "gc_conservative": False, "args": []}
     i = 0
     positional: list[str] = []
@@ -64,6 +64,8 @@ def _parse(argv: list[str]):
             opts["stats"] = True
         elif a == "--emit-ir":
             opts["emit_ir"] = True
+        elif a == "--emit-asm":
+            opts["emit_asm"] = True
         elif a in ("-v", "--verbose"):
             opts["verbose"] = True
         elif a.startswith("-"):
@@ -96,6 +98,11 @@ def cmd_build(argv: list[str]) -> int:
         with open(ir_path, "w", encoding="utf-8") as f:
             f.write(dump_program(result.program))
         _err(i18n.t("build.ir", path=ir_path))
+    if opts["emit_asm"]:
+        asm_path = os.path.splitext(out)[0] + ".asm"
+        with open(asm_path, "w", encoding="utf-8") as f:
+            f.write(dump_asm(result.program, result.labels, result.code_bytes, result.allocs))
+        _err(i18n.t("build.asm", path=asm_path))
     print(i18n.t("build.built", path=out, size=len(result.exe)))
     return 0
 

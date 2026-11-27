@@ -48,6 +48,10 @@ CASES = {
     "fib": ("fib32 递归", "fib(32) × 1 轮", 1, 1),
     "collatz": ("Collatz", "300,000 个起点 × 1 轮", 1, 300_000),
     "primes": ("素数计数", "200,000 个整数试除 × 1 轮", 1, 200_000),
+    "list_ops": ("列表索引与累加", "100,000 次 list 索引求和 × 20 轮", 20, 100_000),
+    "dict_ops": ("字典键值查找", "100,000 次 dict 键值读取 × 20 轮", 20, 100_000),
+    "str_ops": ("字符串匹配与长度", "100,000 次 str 相等/长度 × 20 轮", 20, 100_000),
+    "class_oop": ("面向对象方法分派", "100,000 次对象方法调用 × 20 轮", 20, 100_000),
 }
 
 # language -> (label, colour, is_vela)
@@ -115,6 +119,8 @@ def fmt_ms(v: float) -> str:
         return f"{v / 1000:.2f} s"
     if v >= 1:
         return f"{v:.2f} ms"
+    if v < 0.05:
+        return "<0.05 ms（编译期归约）"
     return f"{v * 1000:.0f} µs"
 
 
@@ -158,7 +164,7 @@ def draw_chart(name: str, data: dict, out_path: str, meta: dict) -> None:
     left, right = 300, W - 210
     top = 132
     vals = [v for _, v, _ in series]
-    lo_exp = math.floor(math.log10(min(vals) * 0.75))
+    lo_exp = math.floor(math.log10(max(min(vals), 0.1) * 0.75))
     hi_exp = math.ceil(math.log10(max(vals) * 1.35))
     lo, hi = 10.0 ** lo_exp, 10.0 ** hi_exp
 

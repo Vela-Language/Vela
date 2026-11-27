@@ -197,7 +197,7 @@ class V08ConformanceTests(unittest.TestCase):
         for b in (0, 199):
             _, cnt, err = _run_batch((b, TMPDIR))
             self.assertIsNone(err, err)
-            self.assertEqual(cnt, 25)
+            self.assertEqual(cnt, 50)
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ if ROOT not in sys.path:
 from vela.driver import compile_source  # noqa: E402
 
 TOTAL_PROGRAMS = 10_000
-BATCH_SIZE = 25
+BATCH_SIZE = 50
 
 
 def _rand_arith(rng: random.Random, vars_in_scope: list[str], depth: int) -> str:

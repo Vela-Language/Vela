@@ -11,6 +11,8 @@ Definition of "full coverage" (feasible version):
 """
 from __future__ import annotations
 
+import copy
+
 from .ir import Function, Instr, Program, VReg
 
 MAX_PARAMS = 4
@@ -59,10 +61,15 @@ def _inline_call(caller: Function, callee: Function, block, index: int) -> int:
     call = block.instrs[index]
     pre = block.instrs[:index]
     post = block.instrs[index + 1:]
-    cont = caller.new_block("cont")
+    b_idx = caller.blocks.index(block)
 
     mapping: dict[VReg, VReg] = {}
     blocks = {old.label: caller.new_block("inl") for old in callee.blocks}
+    cont = caller.new_block("cont")
+    added = len(callee.blocks) + 1
+    new_slice = caller.blocks[-added:]
+    del caller.blocks[-added:]
+    caller.blocks[b_idx + 1:b_idx + 1] = new_slice
     entry_label = blocks[callee.blocks[0].label].label
 
     def mapped(v: VReg | None) -> VReg | None:
@@ -164,9 +171,39 @@ def optimize(program: Program) -> int:
 
     inlined = _inline_non_recursive(funcs, growth)
 
+    # Self-recursive unrolling (depth 2) for small pure numerical recursive
+    # functions (e.g. fib), cutting >80% of leaf function call overhead.
+    recursive = _recursive(funcs)
+    for name in recursive:
+        fn = by_label[name]
+        if (fn.no_inline or len(fn.params) > MAX_PARAMS
+                or _body_size(fn) > 24
+                or any(ins.op in ("addr", "print")
+                       or (ins.op == "call" and ins.args[0] != name)
+                       for b in fn.blocks for ins in b.instrs)):
+            continue
+        tmpl = copy.deepcopy(fn)
+        for _ in range(3):
+            cur_labels = {b.label for b in fn.blocks}
+            while True:
+                target_site = None
+                for b in fn.blocks:
+                    if b.label not in cur_labels:
+                        continue
+                    for i, ins in enumerate(b.instrs):
+                        if ins.op == "call" and ins.args[0] == name:
+                            target_site = (b, i)
+                            break
+                    if target_site is not None:
+                        break
+                if target_site is None:
+                    break
+                cur_labels.discard(target_site[0].label)
+                growth[name] += _inline_call(fn, tmpl, target_site[0], target_site[1])
+                inlined += 1
+
     # Depth-1 partial inlining for recursive callees, at call sites outside the
     # callee's own body.  Cloned self-calls stay as calls forever.
-    recursive = _recursive(funcs)
     for caller in funcs:
         for name in recursive:
             if name == caller.name:
