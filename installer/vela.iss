@@ -1,4 +1,4 @@
-; Vela installer (Inno Setup 6)
+﻿; Vela installer (Inno Setup 6)
 ; Build:
 ;   ISCC.exe /DMyAppVersion=0.1.0 /DMyAppDisplayVersion=0.1.0 /DMyAppBuild=0 installer\vela.iss
 ; VersionInfoVersion must stay numeric x.y.z.build; the display version may carry -dev.N.
@@ -36,10 +36,11 @@ OutputBaseFilename=vela-{#MyAppDisplayVersion}-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+ShowLanguageDialog=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
-ChangesEnvironment=yes
+ChangesEnvironment=no
 VersionInfoVersion={#MyAppVersion}.{#MyAppBuild}
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=Vela compiler installer
@@ -50,9 +51,17 @@ CloseApplications=no
 SetupLogging=yes
 
 [Languages]
-; Inno Setup 6.7.1 on GitHub's windows-latest image does not ship
-; Languages\ChineseSimplified.isl, so keep the installer English-only for now.
 Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
+
+[Tasks]
+Name: "addpath"; Description: "{cm:AddPathTask}"; GroupDescription: "{cm:AddPathGroup}"; Flags: unchecked
+
+[CustomMessages]
+english.AddPathTask=Add Vela to the user PATH (reopen the terminal afterwards)
+english.AddPathGroup=Optional tasks:
+chinesesimp.AddPathTask=将 Vela 加入用户 PATH（安装后请重新打开终端）
+chinesesimp.AddPathGroup=可选任务：
 
 [Files]
 Source: "..\vela\*"; DestDir: "{app}\vela"; Excludes: "__pycache__\*,*.pyc"; Flags: recursesubdirs createallsubdirs ignoreversion
@@ -65,7 +74,8 @@ Source: "..\docs\*"; DestDir: "{app}\docs"; Flags: recursesubdirs createallsubdi
 
 [Registry]
 Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; \
-    ValueData: "{olddata};{app}"; Check: NeedsAddPath('{app}'); Flags: preservestringtype
+    ValueData: "{olddata};{app}"; Tasks: addpath; Check: NeedsAddPath('{app}'); Flags: preservestringtype
+Root: HKCU; Subkey: "Software\Vela"; ValueType: dword; ValueName: "PathAdded"; ValueData: "1"; Tasks: addpath; Check: NeedsAddPath('{app}')
 
 [Code]
 function NeedsAddPath(Param: string): Boolean;
@@ -85,7 +95,12 @@ procedure RemoveFromPath();
 var
   OrigPath, NewPath, Part, UpperApp: string;
   P: Integer;
+  Added: Cardinal;
 begin
+  if not RegQueryDWordValue(HKEY_CURRENT_USER, 'Software\Vela', 'PathAdded', Added) then
+    exit;
+  if Added <> 1 then
+    exit;
   if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', OrigPath) then
     exit;
   UpperApp := Uppercase(ExpandConstant('{app}'));
@@ -111,6 +126,7 @@ begin
     end;
   end;
   RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', NewPath);
+  RegDeleteValue(HKEY_CURRENT_USER, 'Software\Vela', 'PathAdded');
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

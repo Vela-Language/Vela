@@ -12,11 +12,16 @@ class VelaError(Exception):
     kind = "error"
 
     def __init__(self, message: str, node: ast.AST | None = None,
-                 filename: str | None = None) -> None:
+                 filename: str | None = None, *, key: str | None = None,
+                 **params: object) -> None:
+        if key is not None:
+            message = i18n.EN.get(key, message).format(**params)
         super().__init__(message)
         self.message = message
         self.node = node
         self.filename = filename
+        self.key = key
+        self.params = params
 
     @property
     def lineno(self) -> int | None:
@@ -28,7 +33,9 @@ class VelaError(Exception):
         return col + 1 if col is not None else None
 
     def localized_message(self) -> str:
-        return self.message
+        if self.key is not None:
+            return i18n.t(self.key, **self.params)
+        return i18n.translate_diagnostic(self.message)
 
     def format(self, filename: str | None = None) -> str:
         fn = self.filename or filename or "<input>"

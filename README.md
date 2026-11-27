@@ -83,16 +83,25 @@ python -m vela check examples/fib.vl -v
 .\vela.cmd build bench/fib.vl -o fib.exe
 ```
 
-## 中英双语（i18n）
+## 中英双语（i18n / Bilingual Support）
+
+> **Bilingual Summary**: Vela provides 100% bilingual (Chinese / English) CLI help, status & statistics (`--stats`), compile-time diagnostics, and compiled `.exe` runtime error messages. Use `--lang zh|en` for a temporary per-command override, or `--set-lang zh|en` to permanently change the default display language.
 
 ```powershell
+# 临时切换当次命令的显示语言（--lang zh|en）
 python -m vela --help --lang zh
 python -m vela check examples/fib.vl --lang zh
+python -m vela build examples/fib.vl -o fib.exe --lang zh   # 生成的 exe 运行时报错也为中文
+
+# 永久修改默认显示语言（--set-lang zh|en）
+python -m vela --set-lang zh
+python -m vela --set-lang en
+
+# 环境变量覆盖（优先级：--lang > VELA_LANG > --set-lang 持久化配置 > 默认 en）
 $env:VELA_LANG = "zh"; python -m vela run examples/fib.vl
 ```
 
-当前覆盖：帮助/用法、CLI 状态消息、诊断类别、"native profile 不支持"包装与常见特性名。
-类型/编译错误的细节文本、生成 exe 的运行时错误仍为英文，后续迁移到消息 ID。
+覆盖范围（100% 中英键对齐）：CLI 帮助/用法、`build/run/check/bench` 状态、`--stats` 编译统计、`--emit-ir`/`--emit-asm` 提示、全部类型/语法/编译期诊断消息、生成 `.exe` 的全部运行时错误消息（除零/溢出/负指数/`range` 零步长等）以及 Inno Setup 安装向导中英界面。
 
 ## 测试与基准
 

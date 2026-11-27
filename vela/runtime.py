@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import struct
 
+from . import i18n
 from .pe import DataBuilder, ImportTable
 from .x64 import Asm
 
@@ -189,17 +190,11 @@ class Runtime:
         # on Windows a newline is CRLF.  Match that byte-for-byte.
         self.nl_off = rdata.add_str_descriptor("\r\n")
         self.space_off = rdata.add_str_descriptor(" ")
-        self.msg_divzero = rdata.add_str_descriptor(
-            "Vela runtime error: integer division by zero\n")
-        self.msg_overflow = rdata.add_str_descriptor(
-            "Vela runtime error: integer overflow (int64 range exceeded)\n")
-        self.msg_negexp = rdata.add_str_descriptor(
-            "Vela runtime error: negative integer exponent is not supported "
-            "by the native int profile\n")
-        self.msg_stepzero = rdata.add_str_descriptor(
-            "Vela runtime error: range() step must not be zero\n")
-        self.msg_alloc = rdata.add_str_descriptor(
-            "Vela runtime error: out of memory\n")
+        self.msg_divzero = rdata.add_str_descriptor(i18n.t("rt.divzero"))
+        self.msg_overflow = rdata.add_str_descriptor(i18n.t("rt.overflow"))
+        self.msg_negexp = rdata.add_str_descriptor(i18n.t("rt.negexp"))
+        self.msg_stepzero = rdata.add_str_descriptor(i18n.t("rt.stepzero"))
+        self.msg_alloc = rdata.add_str_descriptor(i18n.t("rt.alloc"))
         # Minimal type descriptor: [0] kind tag, [8] payload size.
         self.type_int_off = data.add(struct.pack("<QQ", 1, 8), 8)
         self.type_float_off = data.add(struct.pack("<QQ", 2, 8), 8)
@@ -231,22 +226,14 @@ class Runtime:
         self.colon_off = rdata.add_str_descriptor(": ")
         self.rbracket_off = rdata.add_str_descriptor("]")
         self.comma_off = rdata.add_str_descriptor(", ")
-        self.msg_capacity = rdata.add_str_descriptor(
-            "Vela runtime error: list capacity exceeded\n")
-        self.msg_pop = rdata.add_str_descriptor(
-            "Vela runtime error: pop from empty list\n")
-        self.msg_big = rdata.add_str_descriptor(
-            "Vela runtime error: bigint too large for this operation\n")
-        self.msg_code = rdata.add_str_descriptor(
-            "Vela runtime error: code object arity must be 0..3 for dynamic calls\n")
-        self.msg_bigdiv = rdata.add_str_descriptor(
-            "Vela runtime error: bigint division requires non-negative dividend and positive divisor\n")
-        self.msg_key = rdata.add_str_descriptor(
-            "Vela runtime error: missing dict key\n")
-        self.msg_index = rdata.add_str_descriptor(
-            "Vela runtime error: string index out of range\n")
-        self.msg_unhandled = rdata.add_str_descriptor(
-            "Vela runtime error: unhandled exception\n")
+        self.msg_capacity = rdata.add_str_descriptor(i18n.t("rt.capacity"))
+        self.msg_pop = rdata.add_str_descriptor(i18n.t("rt.pop"))
+        self.msg_big = rdata.add_str_descriptor(i18n.t("rt.big"))
+        self.msg_code = rdata.add_str_descriptor(i18n.t("rt.code"))
+        self.msg_bigdiv = rdata.add_str_descriptor(i18n.t("rt.bigdiv"))
+        self.msg_key = rdata.add_str_descriptor(i18n.t("rt.key"))
+        self.msg_index = rdata.add_str_descriptor(i18n.t("rt.index"))
+        self.msg_unhandled = rdata.add_str_descriptor(i18n.t("rt.unhandled"))
         self.minus_off = rdata.add_str_descriptor("-")
         self.none_obj_off = data.add(b"\x00" * 8, 8)
         self.gc_live_off = data.add(b"\x00" * 8, 8)
@@ -278,10 +265,8 @@ class Runtime:
         self.gc_root_count_off = data.add(b"\x00" * 8, 8)
         self.code_cache_off = data.add(b"\x00" * (64 * 8), 8)
         self.code_cache_count_off = data.add(b"\x00" * 8, 8)
-        self.msg_root_overflow = rdata.add_str_descriptor(
-            "Vela runtime error: GC root stack overflow\n")
-        self.msg_type = rdata.add_str_descriptor(
-            "Vela runtime error: unbox type mismatch\n")
+        self.msg_root_overflow = rdata.add_str_descriptor(i18n.t("rt.root_overflow"))
+        self.msg_type = rdata.add_str_descriptor(i18n.t("rt.type"))
 
     # -- helpers -----------------------------------------------------------
     def _call(self, a: Asm, dll: str, func: str) -> None:

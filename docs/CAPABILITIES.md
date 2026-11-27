@@ -1,8 +1,8 @@
 # Vela 当前能力矩阵（唯一真源：已实现 / 未实现 / 明确豁免）
 
-> 最后更新：2026-11-27 · 当前开发版本：`0.9.0`（已发布稳定版：`v0.8.0`）
+> 最后更新：2026-11-27 · 当前开发版本：`0.10.0`（已发布稳定版：`v0.9.0`）
 > 本文档是 Vela 语言特性、运行时与标准库状态的**唯一当前真源**。
-> 历史阶段记录见 [V0.3-CLOSURE.md](V0.3-CLOSURE.md)、[V0.4-CLOSURE.md](V0.4-CLOSURE.md)、[V0.5-CLOSURE.md](V0.5-CLOSURE.md)、[V0.6-CLOSURE.md](V0.6-CLOSURE.md)、[V0.7-CLOSURE.md](V0.7-CLOSURE.md)、[V0.8-CLOSURE.md](V0.8-CLOSURE.md)、[V0.9-CLOSURE.md](V0.9-CLOSURE.md)；总体路线见 [V1.0-PLAN.md](V1.0-PLAN.md)。
+> 历史阶段记录见 [V0.3-CLOSURE.md](V0.3-CLOSURE.md)、[V0.4-CLOSURE.md](V0.4-CLOSURE.md)、[V0.5-CLOSURE.md](V0.5-CLOSURE.md)、[V0.6-CLOSURE.md](V0.6-CLOSURE.md)、[V0.7-CLOSURE.md](V0.7-CLOSURE.md)、[V0.8-CLOSURE.md](V0.8-CLOSURE.md)、[V0.9-CLOSURE.md](V0.9-CLOSURE.md)、[V0.10-CLOSURE.md](V0.10-CLOSURE.md)；总体路线见 [V1.0-PLAN.md](V1.0-PLAN.md)。
 
 ## 1. 编译模式概览
 
@@ -85,13 +85,16 @@
 - **多级异常链与 `ExceptionGroup`**：运行时 16 层 `exc_causes` 异常链栈完整保留连续 `raise ... from ...` 多级原因；`raise ExceptionGroup("msg", [...])` 支持多分支 `try ... except* Exc1: ... except* Exc2: ...` 按序多路命中。
 - **CPython `Lib/test` 全量分类与 10,000 随机 AST 差分门禁**：全量分类与书面豁免清单见 [CPYTHON-EXEMPTIONS.md](CPYTHON-EXEMPTIONS.md)（纯 Python 语义集 200/200 = 100.00% 通过）；`tests/fuzz_10k.py` 生成 10,000 个独立随机 AST 程序（2,496+ 种 AST 骨架）与 CPython 逐字节一致（10,000/10,000 通过，0 skip）。
 
+### 2.7 全面双语（i18n）与 `--set-lang` 持久化语言管理（v0.10 已实现）
+
+- **双层语言开关与四级优先级**：`--lang zh|en`（当次命令临时覆盖） > `VELA_LANG`（环境变量） > `--set-lang zh|en`（持久化用户配置 `~/.vela_lang`） > 默认 `en`。
+- **100% 中英键与占位符对齐**：`vela/i18n.py` 消息注册表覆盖全部 CLI 帮助、状态、`--stats`、`--emit-ir`/`--emit-asm`、编译期/类型诊断与生成 `.exe` 的 15 类运行时错误；`vela build --lang zh` 编译出的独立 `.exe` 运行时错误为中文，`--lang en` 与 `v0.9.0` 逐字节一致；Inno Setup 安装包随附 `ChineseSimplified.isl`。
+
 ---
 
-## 3. 未实现能力（Unimplemented · 按 v0.10 路线推进）
+## 3. 未实现能力（Unimplemented · v1.0 范围已全部完成）
 
-| 能力项 | 目标阶段 | 当前状态 |
-| --- | --- | --- |
-| 全面双语（i18n 100% 键覆盖、中文 exe 运行时错误、安装包中文界面） | v0.10 | 基础 CLI/诊断分类已双语，全量文案迁移在 v0.10 |
+v1.0 路线图（v0.1–v0.10）内的全部计划能力已实现并通过门禁验证。
 
 ---
 

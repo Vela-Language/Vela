@@ -1,7 +1,8 @@
 # Vela Native Profile（v0.1 静态基线说明）
 
 > **当前能力真源提示**：本文档仅描述 v0.1 默认无装箱静态子集。包含 `--boxed` / `--boxed-dyn` 对象运行时、精确 GC、大整数、容器、异常、类与生成器在内的**完整当前能力表（已实现 / 未实现 / 明确豁免）请以 [CAPABILITIES.md](CAPABILITIES.md) 为准**。
-> 对标版本：Vela v0.1.0 · 语法前端：宿主 CPython `ast`
+> **Bilingual Summary**: The Vela Native Profile is a statically typed subset of Python (`int64`, `float64`, `bool`, `str`, `None`) compiled directly to standalone Windows x86-64 PE32+ executables; passing `--boxed` enables the full pure-Python 3.15 object runtime.
+> 对标版本：Vela v0.10.0 · 语法前端：宿主 CPython `ast`
 
 native profile 是 Python 的一个**静态类型子集**：落在子集内的代码被编译为原生机器码，
 子集外的代码在 `vela build` 下直接报错，在 `vela run` 下显式回退 CPython。
@@ -117,3 +118,14 @@ python -m vela check script.py -v     # 只检查，给出函数签名
 
 回退使用当前 Python 解释器执行原文件，因此外部行为与直接 `python script.py` 一致
 （包括 stdout 刷新、退出码、`sys.argv`）。
+
+## 7. 双语诊断与语言开关（i18n / Language Switches）
+
+- **语言优先级**：`--lang zh|en`（当次命令临时覆盖） > `VELA_LANG`（环境变量） > `--set-lang zh|en`（持久化用户配置 `~/.vela_lang`） > 默认 `en`。
+- **运行时错误随编译期语言**：`vela build --lang zh`（或 `--set-lang zh` 默认中文下）编译出的 `.exe` 在发生除零、int64 溢出、负指数、`range()` 步长零等错误时输出中文 `Vela 运行时错误：...`；`--lang en` 编译出的 `.exe` 输出英文 `Vela runtime error: ...`。
+- **统一术语对照**：
+  - `native profile`：原生 profile
+  - `type error`：类型错误
+  - `syntax error`：语法错误
+  - `internal error`：内部错误
+  - `runtime error`：运行时错误

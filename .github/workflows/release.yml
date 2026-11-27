@@ -112,11 +112,20 @@ jobs:
               $changesLines += ""
             }
           }
-          $verParts = $base -split '\.'
-          if ($verParts.Count -ge 2) {
-            $closureDoc = "docs/V$($verParts[0]).$($verParts[1])-CLOSURE.md"
+          $closureDocs = @()
+          if ($prevLatest -ne "" -and $prevLatest -ne "v$display") {
+            $closureDocs = @(git diff --name-only "$prevLatest..HEAD" -- "docs/V*-CLOSURE.md" 2>$null | Sort-Object)
+          }
+          if ($closureDocs.Count -eq 0) {
+            $verParts = $base -split '\.'
+            if ($verParts.Count -ge 2) {
+              $cand = "docs/V$($verParts[0]).$($verParts[1])-CLOSURE.md"
+              if (Test-Path $cand) { $closureDocs = @($cand) }
+            }
+          }
+          foreach ($closureDoc in $closureDocs) {
             if (Test-Path $closureDoc) {
-              $changesLines += "### 本阶段交付摘要 ($closureDoc)"
+              $changesLines += "### 阶段交付摘要 ($closureDoc)"
               $changesLines += ""
               $changesLines += Get-Content $closureDoc -Encoding utf8
               $changesLines += ""

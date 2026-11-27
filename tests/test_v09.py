@@ -181,7 +181,7 @@ class V09PerformanceAndEngineeringTests(unittest.TestCase):
         self.assertIn("fn___vela_main__:", asm_text)
 
     def test_local_dist_and_installer_verification(self):
-        launcher = os.path.join(ROOT, "dist", "vela.cmd")
+        launcher = os.path.join(ROOT, "vela.cmd")
         self.assertTrue(os.path.isfile(launcher))
         p = subprocess.run([launcher, "version"], capture_output=True, timeout=15)
         self.assertEqual(p.returncode, 0)

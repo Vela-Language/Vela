@@ -24,15 +24,17 @@ def _format_error(exc: Exception, filename: str) -> str:
     if isinstance(exc, VelaError):
         return exc.format(filename)
     if isinstance(exc, SyntaxError):
-        return f"{filename}:{exc.lineno}:{exc.offset}: syntax error: {exc.msg}"
-    return f"{filename}: internal error: {type(exc).__name__}: {exc}"
+        return i18n.t("err.syntax", filename=filename, lineno=exc.lineno,
+                      offset=exc.offset, msg=exc.msg)
+    return i18n.t("err.internal", filename=filename, exc_type=type(exc).__name__, exc=exc)
 
 
 def _print_stats(result) -> None:
     s = result.stats
-    _err(f"vela: {s.functions} functions, {s.blocks} blocks, {s.instructions} IR "
-         f"instructions, {s.vregs} vregs, {s.code_bytes} bytes of machine code, "
-         f"{s.image_bytes} byte image, {s.seconds * 1000:.1f} ms")
+    _err(i18n.t("cli.stats", functions=s.functions, blocks=s.blocks,
+                instructions=s.instructions, vregs=s.vregs,
+                code_bytes=s.code_bytes, image_bytes=s.image_bytes,
+                ms=f"{s.seconds * 1000:.1f}"))
 
 
 def _parse(argv: list[str]):
@@ -198,14 +200,18 @@ def cmd_bench(argv: list[str]) -> int:
                 os.unlink(exe)
             except OSError:
                 pass
-        print(f"{src}: compile {(t1 - t0) * 1000:.1f} ms, run {(t3 - t2) * 1000:.1f} ms, "
-              f"image {len(result.exe)} bytes, exit {code}")
+        print(i18n.t("bench.result", src=src,
+                     compile_ms=f"{(t1 - t0) * 1000:.1f}",
+                     run_ms=f"{(t3 - t2) * 1000:.1f}",
+                     size=len(result.exe), code=code))
     return 0
 
 
-def _extract_lang(argv: list[str]) -> list[str]:
+def _extract_lang(argv: list[str]) -> tuple[list[str], bool]:
+    i18n.set_lang(None)
     out: list[str] = []
     lang: str | None = None
+    set_lang_val: str | None = None
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -223,15 +229,33 @@ def _extract_lang(argv: list[str]) -> list[str]:
             lang = a.split("=", 1)[1]
             i += 1
             continue
+        if a == "--set-lang":
+            if i + 1 >= len(argv):
+                _err(i18n.t("lang.set_missing"))
+                raise SystemExit(2)
+            set_lang_val = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith("--set-lang="):
+            set_lang_val = a.split("=", 1)[1]
+            i += 1
+            continue
         out.append(a)
         i += 1
+    if set_lang_val is not None:
+        try:
+            i18n.set_default_lang(set_lang_val)
+        except ValueError:
+            _err(i18n.t("lang.invalid", lang=set_lang_val))
+            raise SystemExit(2)
+        print(i18n.t("lang.set_ok", lang=set_lang_val.lower()))
     if lang is not None:
         try:
             i18n.set_lang(lang)
         except ValueError:
             _err(i18n.t("lang.invalid", lang=lang))
             raise SystemExit(2)
-    return out
+    return out, (set_lang_val is not None)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -242,8 +266,13 @@ def main(argv: list[str] | None = None) -> int:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:  # pragma: no cover - non-standard streams
             pass
-    argv = _extract_lang(list(sys.argv[1:] if argv is None else argv))
-    if not argv or argv[0] in ("-h", "--help", "help"):
+    argv, did_set_lang = _extract_lang(list(sys.argv[1:] if argv is None else argv))
+    if not argv:
+        if did_set_lang:
+            return 0
+        print(i18n.usage(__version__))
+        return 0
+    if argv[0] in ("-h", "--help", "help"):
         print(i18n.usage(__version__))
         return 0
     cmd = argv[0]
